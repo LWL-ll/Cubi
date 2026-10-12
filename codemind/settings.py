@@ -25,7 +25,8 @@ SECRET_KEY = 'django-insecure-v8g6io&!_w@$!_c#+j7059)lg_ncn+2j5(&g_=!qh0x*l7g3my
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+# 开发期允许的访问域名（testserver 供 Django 测试客户端使用；交付时追加正式域名）
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'testserver']
 
 
 # Application definition
@@ -37,7 +38,25 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    # 自定义应用：用户注册/登录/权限
+    'users',
+    # 登录防暴力破解（django-axes）
+    'axes',
+    # 教务业务：课程、班级、导入
+    'academics',
+    # REST API 框架（前后端分离）
+    'rest_framework',
 ]
+
+# DRF 配置：会话认证（浏览器演示直接可用），默认要求登录
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.SessionAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+}
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -45,6 +64,8 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    # axes 登录失败记录中间件（必须放在 AuthenticationMiddleware 之后）
+    'axes.middleware.AxesMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -68,6 +89,22 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'codemind.wsgi.application'
+
+# ==================== 认证与权限配置 ====================
+
+# 自定义用户模型（必须在首次迁移前确定）
+AUTH_USER_MODEL = 'users.User'
+
+# 认证后端（axes 8.x 要求两个配合使用）：
+# 1. AxesStandaloneBackend 只负责拦截锁定账号，不负责认证
+# 2. ModelBackend 负责真正的账号密码认证
+AUTHENTICATION_BACKENDS = [
+    'axes.backends.AxesStandaloneBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
+
+# 未登录访问受保护页面时跳转的登录页
+LOGIN_URL = 'login'
 
 
 # Database
@@ -103,9 +140,10 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/6.1/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+# 中文站点：后台与表单本地化为中文
+LANGUAGE_CODE = 'zh-hans'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Shanghai'
 
 USE_I18N = True
 
@@ -126,3 +164,18 @@ MAILERS = {
         'BACKEND': 'django.core.mail.backends.console.EmailBackend',
     },
 }
+
+# ==================== 安全加固配置 ====================
+
+# django-axes 防暴力破解：同一账号+IP 连续失败 5 次锁定 1 小时
+AXES_FAILURE_LIMIT = 5
+AXES_COOLOFF_TIME = 1              # 锁定时长（小时）
+AXES_LOCKOUT_PARAMETERS = ['username', 'ip_address']
+AXES_RESET_ON_SUCCESS = True       # 登录成功后清零失败计数
+
+# 会话与 Cookie 安全
+SESSION_COOKIE_HTTPONLY = True     # JS 读不到会话 Cookie，防 XSS 窃取
+CSRF_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'    # 防跨站请求伪造
+SESSION_COOKIE_AGE = 2 * 60 * 60   # 会话 2 小时过期
+SESSION_EXPIRE_AT_BROWSER_CLOSE = True  # 关闭浏览器会话即失效

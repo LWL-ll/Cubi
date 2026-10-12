@@ -1,0 +1,68 @@
+{% extends 'office/base_office.html' %}
+
+{% block title %}批量导入 - 教务工作台{% endblock %}
+
+{% block content %}
+<h4 class="fw-bold mb-3">批量导入</h4>
+<div class="row g-4">
+    {# 导入课程 #}
+    <div class="col-lg-4">
+        <div class="card h-100 shadow-sm">
+            <div class="card-body">
+                <h5 class="card-title">📖 导入课程</h5>
+                <p class="text-secondary small mb-3">
+                    xlsx 格式（第一行为表头）：<br>
+                    A 列 <code>课程编号</code>，B 列 <code>课程名称</code>
+                </p>
+                <form method="post" enctype="multipart/form-data" action="{% url 'office_import' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="type" value="course">
+                    <input type="file" class="form-control mb-2" name="file" accept=".xlsx" required>
+                    <button type="submit" class="btn btn-primary w-100">上传导入</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    {# 导入教师 #}
+    <div class="col-lg-4">
+        <div class="card h-100 shadow-sm">
+            <div class="card-body">
+                <h5 class="card-title">👩‍🏫 导入教师</h5>
+                <p class="text-secondary small mb-3">
+                    xlsx 格式（第一行为表头）：<br>
+                    A 列 <code>工号</code>，B 列 <code>姓名</code>，C 列 <code>初始密码</code>
+                </p>
+                <form method="post" enctype="multipart/form-data" action="{% url 'office_import' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="type" value="teacher">
+                    <input type="file" class="form-control mb-2" name="file" accept=".xlsx" required>
+                    <button type="submit" class="btn btn-primary w-100">上传导入</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    {# 导入班级学生 #}
+    <div class="col-lg-4">
+        <div class="card h-100 shadow-sm">
+            <div class="card-body">
+                <h5 class="card-title">🎓 导入班级学生</h5>
+                <p class="text-secondary small mb-3">
+                    xlsx 格式（第一行为表头）：<br>
+                    A 列 <code>学号</code>，B 列 <code>姓名</code>，C 列 <code>初始密码</code>
+                </p>
+                <form method="post" enctype="multipart/form-data" action="{% url 'office_import' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="type" value="student">
+                    <input type="file" class="form-control mb-2" name="file" accept=".xlsx" required>
+                    <button type="submit" class="btn btn-primary w-100">上传导入</button>
+                </form>
+                <p class="text-secondary small mb-0 mt-2">
+                    💡 按学号格式自动分配学院和班级（班级不存在则自动创建）。
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

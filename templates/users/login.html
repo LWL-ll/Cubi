@@ -1,0 +1,35 @@
+{% extends 'users/base.html' %}
+
+{% block title %}登录 - CodeMind 教辅平台{% endblock %}
+
+{% block content %}
+<div class="container d-flex justify-content-center mt-5">
+    <div class="auth-card card shadow p-4" style="max-width: 420px; width: 100%;">
+        <div class="text-center mb-4">
+            <h3 class="fw-bold mb-1">欢迎回来 👋</h3>
+            <p class="text-secondary mb-0">账号由学校统一分配，请使用学号/工号登录</p>
+        </div>
+
+        {# 登录错误提示（账号密码错误 / 账号已锁定） #}
+        {% if error %}
+        <div class="alert alert-danger py-2" role="alert">{{ error }}</div>
+        {% endif %}
+
+        <form method="post" action="{% url 'login' %}">
+            {% csrf_token %}
+            <div class="mb-3">
+                <label for="username" class="form-label">账号</label>
+                <input type="text" class="form-control" id="username" name="username" placeholder="请输入学号或工号" required>
+            </div>
+            <div class="mb-3">
+                <label for="password" class="form-label">密码</label>
+                <input type="password" class="form-control" id="password" name="password" placeholder="请输入密码" required>
+            </div>
+            <button type="submit" class="btn btn-primary w-100 py-2">登 录</button>
+        </form>
+        <p class="text-center text-secondary mt-3 mb-0">
+            <small>账号或密码问题请联系学校管理员</small>
+        </p>
+    </div>
+</div>
+{% endblock %}

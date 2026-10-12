@@ -1,0 +1,125 @@
+{% extends 'office/base_office.html' %}
+
+{% block title %}{{ clazz.name }} - 班级详情{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+        <h4 class="fw-bold mb-1">
+            {{ clazz.name }}
+            <span class="badge text-bg-light border fs-6">{{ college.name }}</span>
+        </h4>
+        <div>
+            当前课程：
+            <span class="badge text-bg-info me-1">{{ course.name }}（{{ course.code }}）</span>
+            <a href="{% url 'office_course_college' course.id college.id %}"
+               class="small text-decoration-none ms-2">← 返回 {{ course.name }} · {{ college.name }}</a>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    {# 教师分配区 #}
+    <div class="col-lg-5">
+        <div class="card shadow-sm h-100">
+            <div class="card-header fw-bold">班级教师（{{ teachers|length }}）</div>
+            <div class="card-body">
+                {% for teacher in teachers %}
+                <div class="d-flex justify-content-between align-items-center border rounded-3 px-3 py-2 mb-2">
+                    <div>
+                        <span class="fw-bold">{{ teacher.name|default:teacher.username }}</span>
+                        <span class="text-secondary small ms-2">工号 {{ teacher.username }}</span>
+                    </div>
+                    <form method="post" class="m-0">
+                        {% csrf_token %}
+                        <input type="hidden" name="action" value="removeTeacher">
+                        <input type="hidden" name="teacherId" value="{{ teacher.id }}">
+                        <button type="submit" class="btn btn-sm btn-outline-danger">移除</button>
+                    </form>
+                </div>
+                {% empty %}
+                <p class="text-secondary">还没有分配教师</p>
+                {% endfor %}
+                <hr>
+                <form method="post" class="mb-3">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="addTeacher">
+                    <label class="form-label">下拉选择本课程教师</label>
+                    <div class="input-group">
+                        <select class="form-select" name="teacherId">
+                            {% for teacher in availableTeachers %}
+                            <option value="{{ teacher.id }}">{{ teacher.name|default:teacher.username }}（{{ teacher.username }}）</option>
+                            {% empty %}
+                            <option value="">本课程教师池没有可分配教师，先到课程设置里导入</option>
+                            {% endfor %}
+                        </select>
+                        <button type="submit" class="btn btn-primary">添加</button>
+                    </div>
+                </form>
+                <form method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="addTeacher">
+                    <label class="form-label">或直接输入工号添加</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control" name="teacherNo"
+                               placeholder="如：T1001" required>
+                        <button type="submit" class="btn btn-outline-primary">按工号添加</button>
+                    </div>
+                </form>
+                <p class="text-secondary small mb-0 mt-3">
+                    💡 下拉框只显示「{{ course.name }} · {{ college.name }}」教师池中的教师；按工号添加会自动加入本课程教师池。
+                </p>
+            </div>
+        </div>
+    </div>
+
+    {# 学生列表区 #}
+    <div class="col-lg-7">
+        <div class="card shadow-sm h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span class="fw-bold">班级学生（{{ students|length }}）</span>
+                <button class="btn btn-sm btn-primary" data-bs-toggle="collapse" data-bs-target="#importStudentForm">📥 导入学生到本班</button>
+            </div>
+            <div class="collapse" id="importStudentForm">
+                <div class="card-body border-bottom">
+                    <form method="post" enctype="multipart/form-data">
+                        {% csrf_token %}
+                        <input type="hidden" name="action" value="importStudents">
+                        <p class="text-secondary small mb-2">
+                            xlsx 格式（第一行为表头）：A 列 <code>学号</code>，B 列 <code>姓名</code>，C 列 <code>初始密码</code>
+                        </p>
+                        <div class="input-group">
+                            <input type="file" class="form-control" name="file" accept=".xlsx" required>
+                            <button type="submit" class="btn btn-primary">上传导入</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-hover align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>学号</th>
+                            <th>姓名</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for student in students %}
+                        <tr>
+                            <td>{{ forloop.counter }}</td>
+                            <td>{{ student.username }}</td>
+                            <td>{{ student.name|default:'—' }}</td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="3" class="text-center text-secondary py-4">还没有学生，点击右上角导入</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

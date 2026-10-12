@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}CodeMind 教辅平台{% endblock %}</title>
+    {# 引入 Bootstrap 5 样式（BootCDN 国内加速） #}
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+    {# 引入自定义样式 #}
+    {% load static %}
+    <link href="{% static 'users/style.css' %}" rel="stylesheet">
+</head>
+<body class="auth-body">
+    {# 顶部导航栏 #}
+    <nav class="navbar navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand fw-bold" href="{% url 'login' %}">🧠 CodeMind 教辅平台</a>
+        </div>
+    </nav>
+
+    {# 页面主体内容，由子模板填充 #}
+    {% block content %}{% endblock %}
+
+    {# 页脚 #}
+    <footer class="text-center text-white-50 py-4 mt-auto">
+        <small>CodeMind 教辅平台 · 让学习更高效</small>
+    </footer>
+
+    {# Bootstrap JS 包（含 Popper，供后续组件使用） #}
+    <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
+    {# 子模板专属脚本 #}
+    {% block extra_js %}{% endblock %}
+</body>
+</html>
