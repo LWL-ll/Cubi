@@ -645,3 +645,11 @@ v1 经外部设计审查（P0×5 / P1×14 / P2×8），本版修订：
 
 - 第九章补 `judge_snapshot` 字段（{tests, spj_code, tier, compare_strategy} 完整副本）：7.3「判题全程使用快照数据，不重查实时题目」的必然推论，草案漏列——判题任务零实时查题，教师改题不改变已受理提交的判题标准
 - 补全草案未写明的外键策略：Problem.owner SET_NULL（删号题目保留）、Homework.teaching_class PROTECT（有作业删不掉教学班）、Homework.created_by SET_NULL、Submission.problem SET_NULL（配合 7.3「题目被删除→system_error」）、Submission.homework PROTECT、HomeworkProblem.problem PROTECT（被作业引用的题不可删）
+
+### v6（2026-10-18，M5 判题主控落地修订）
+
+- **租约回收落地方式**：django-q2 的定时任务以 DB 的 Schedule 记录承载（Q_CLUSTER 配置里的 schedule 键在 v2 已移除），由 qcluster 主集群调度器每分钟扫描 next_run 投递。落地为 `tasks/migrations/0002_create_recycle_schedule.py` 数据迁移（migrate 幂等创建，name=judge-lease-recycle，每分钟无限重复）——`recycleStaleLeases` 除 8.1 的「leased 心跳超 60s 回收」外，附带「pending 超 120s 补投」扫描（受理 on_commit 投递失败兜底）
+- **编译命令冻结**：`gcc main.c -o main -O2 -std=c11 -lm`（对应 copyOutCached ["main"] 与 args ["./main"]）；Python 直接 `python3 main.py` 内联。gcc/python3 具体版本与标准库清单仍属部署契约（deploy/judge-env.md 待实测后冻结）
+- **沙箱错误重试语义精确化**：用户程序/编译遇 File Error 或 Internal Error（客户端已重试 1 次）→ 任务层转瞬时异常 → 租约回退 retryable（清 file_id + 清理产物）→ 抛给 q2 按 retry=1000s 重投；checker 故障（spj 沙箱级错误）→ 任务内重试 1 次 → 仍失败置 system_error（≠ 用户 WA，不消耗 q2 重试额度）
+- **attempt 执行次数公式**：8.1 回收与领取两处均 attempt_id+1（回收 +1 作废令牌、领取 +1 建立新租约），执行次数 = (attempt_id + 1) // 2；claimLease 后该值 > max_attempts(2) → 直接 failed + system_error（重试上限闸集中在任务入口一处）
+- **spj 判题形态补全**：argv = ["python3", "checker.py", "input.txt", "user_out.txt", "expected.txt"]（Python 的 sys.argv 视角与 11 章示例 sys.argv[2]=user_out 一致）；checker 非 Accepted 一律按故障处理（含 TLE/MLE/RE，防 checker 自身问题冤枉学生）
