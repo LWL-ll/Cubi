@@ -1,7 +1,9 @@
+from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import redirect, render
 
+from .api import changeUserPassword
 from .permissions import GROUP_NAMES, getGroupKey
 
 
@@ -31,6 +33,30 @@ def logoutView(request):
         logout(request)
         return redirect('login')
     return redirect('home')
+
+
+def renderChangePasswordPage(request):
+    """改密页：GET 渲染表单；POST 处理提交（页面端兜底，主线是 API）
+
+    复用 changeUserPassword 服务函数，与 API 走同一套校验逻辑
+    （旧密码校验 + Django 强度校验 + 会话保持）。
+    """
+    if not request.user.is_authenticated:
+        return redirect('login')
+    if request.method == 'POST':
+        oldPassword = request.POST.get('oldPassword', '')
+        newPassword = request.POST.get('newPassword', '')
+        confirmPassword = request.POST.get('confirmPassword', '')
+        if newPassword != confirmPassword:
+            return render(request, 'users/change_password.html',
+                          {'error': '两次输入的新密码不一致'})
+        ok, errMsg = changeUserPassword(
+            request, request.user, oldPassword, newPassword)
+        if not ok:
+            return render(request, 'users/change_password.html', {'error': errMsg})
+        messages.success(request, '密码修改成功')
+        return redirect('home')
+    return render(request, 'users/change_password.html')
 
 
 @login_required

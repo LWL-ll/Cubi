@@ -1,0 +1,12 @@
+# Python 运行产物
+__pycache__/
+*.py[cod]
+
+# Django 本地数据（开发库不入库，环境各自重建）
+db.sqlite3
+
+# 用户上传文件（运行时生成）
+media/
+
+# 环境变量（SECRET_KEY / DJANGO_DEBUG / OJ_AUTH_TOKEN 等敏感配置，禁止入库）
+.env

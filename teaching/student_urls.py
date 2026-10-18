@@ -12,10 +12,10 @@ urlpatterns = [
     # 作业详情 + 提交（homework:view）
     path('homeworks/<int:homeworkId>/', views.renderStudentHomeworkDetail,
          name='student_homework_detail'),
-    # 班级通知（notice:view，权限码待后端权限轮注册）
+    # 班级通知（notice:view）
     path('notices/', views.renderStudentMenuPage, {'key': 'notices'},
          name='student_notices'),
-    # 班级资料（material:view，权限码待后端权限轮注册）
+    # 班级资料（material:view）
     path('materials/', views.renderStudentMenuPage, {'key': 'materials'},
          name='student_materials'),
     # 学生画像（analysis:view_self）
