@@ -336,23 +336,23 @@ class Problem(models.Model):
     has_spj = models.BooleanField('特殊判定', default=False)
     spj_code = models.TextField('spj 源码（Python）', blank=True)
     revision = models.PositiveIntegerField('修订号', default=1)  # 每次修改题目 +1
-    owner = models.ForeignKey(User, ...)                       # 归属：教师个人 / 课程组公共
+    owner = models.ForeignKey(User, SET_NULL, null=True)       # 归属：教师个人 / 课程组公共；删号题目保留
     is_public = models.BooleanField('公共题库', default=False)
     created_at / updated_at
 
 
 class Homework(models.Model):
     """作业：教学班 × 题目集合 + 起止时间（practice 提交无此上下文）"""
-    teaching_class = models.ForeignKey(TeachingClass, ...)
+    teaching_class = models.ForeignKey(TeachingClass, PROTECT)  # 有作业的教学班不可删除
     title = models.CharField('作业标题', max_length=100)
     start_at / deadline = models.DateTimeField('开始/截止时间')
-    created_by = models.ForeignKey(User, ...)                  # 发布教师
+    created_by = models.ForeignKey(User, SET_NULL, null=True)   # 发布教师（删号作业保留）
 
 
 class HomeworkProblem(models.Model):
     """作业-题目中间表：承载题目顺序与作业期版本快照"""
     homework = models.ForeignKey(Homework, ...)
-    problem = models.ForeignKey(Problem, ...)
+    problem = models.ForeignKey(Problem, PROTECT)              # 被作业引用的题目不可删除
     order = models.PositiveSmallIntegerField('题序', default=0)
     problem_revision = models.PositiveIntegerField('选题时的题目修订号')
     # 唯一约束 (homework, problem)；作业内题序唯一 (homework, order)
@@ -361,8 +361,9 @@ class HomeworkProblem(models.Model):
 class Submission(models.Model):
     """提交：三种类型合一（practice/homework，exam 留枚举位二期）"""
     user = models.ForeignKey(User, related_name='submissions')
-    problem = models.ForeignKey(Problem, related_name='submissions')
-    homework = models.ForeignKey(Homework, null=True)          # 练习提交为空
+    problem = models.ForeignKey(Problem, SET_NULL, null=True, related_name='submissions')
+                              # 允许删题；判题时题目缺失置 system_error（7.3）
+    homework = models.ForeignKey(Homework, PROTECT, null=True)  # 练习提交为空；有提交的作业不可删
     language = models.CharField('语言', choices=c/python)
     code = models.TextField('代码原文')                        # 重复检测 + 教师批改要看
     fingerprint = models.CharField('统一换行后原文 SHA256', max_length=64)
@@ -379,6 +380,9 @@ class Submission(models.Model):
     # ---- 资格快照（受理时冻结，判题用它而非实时题目）----
     problem_revision = models.PositiveIntegerField('题目修订号快照')
     tests_hash = models.CharField('测试数据哈希', max_length=64)  # 不可复现时审计用
+    judge_snapshot = models.JSONField('判题数据快照')  # {tests, spj_code, tier, compare_strategy}
+                              # 判题任务零实时查题（7.3 必然推论，v5 补列）：
+                              # 教师改题不改变已受理提交的判题标准，结果可复现
     created_at / judged_at
     # 索引：(user, created_at) 频率检测；(problem, user) 重复检测窗口查询
     # Check 约束：homework 非空时 submit_type 必须为 homework（DB 层防非法组合）
@@ -636,3 +640,8 @@ v1 经外部设计审查（P0×5 / P1×14 / P2×8），本版修订：
 ### v4（2026-10-18，第三轮意见）
 
 - 新增 6.4 主架构组件 ↔ 实现载体映射表：声明本文是《OJ后端设计》的细化实现规范，主链路「异常检测 → 调度器 → 任务构建器 → 结果分析器」不变，逐组件标注实现载体与代码位置（本轮其余 P0/P1/P2 意见已由 v2 修订覆盖，审查基线为 v1）
+
+### v5（2026-10-18，M3 落地修订）
+
+- 第九章补 `judge_snapshot` 字段（{tests, spj_code, tier, compare_strategy} 完整副本）：7.3「判题全程使用快照数据，不重查实时题目」的必然推论，草案漏列——判题任务零实时查题，教师改题不改变已受理提交的判题标准
+- 补全草案未写明的外键策略：Problem.owner SET_NULL（删号题目保留）、Homework.teaching_class PROTECT（有作业删不掉教学班）、Homework.created_by SET_NULL、Submission.problem SET_NULL（配合 7.3「题目被删除→system_error」）、Submission.homework PROTECT、HomeworkProblem.problem PROTECT（被作业引用的题不可删）
