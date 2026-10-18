@@ -125,10 +125,14 @@ def claimLease(judgeTask):
 
 
 def recycleStaleLeases():
-    """租约回收 + 补投扫描（8.1，qcluster 主集群 schedule 每分钟执行）：
+    """租约回收 + 补投扫描（8.1，qcluster long 集群 schedule 每分钟执行）：
     - leased 心跳超 60s → retryable + attempt_id+1（作废旧令牌）
       + 清 file_id + 清理残留产物 + 重新投递
-    - pending 超 120s 未投递 → 补投（受理 on_commit 投递失败兜底）"""
+    - pending 超 120s 未投递 → 补投（受理 on_commit 投递失败兜底）
+    - retryable 孤儿兜底：瞬错回退后依赖 q2 retry 重投，但重投链
+      可能断（broker 消息丢失/重试用尽/进程被杀），无在途任务的
+      retryable 会永久悬挂。余量内 → 置回 pending 重新投递；余量
+      已尽 → failed 终态（不再悬挂）"""
     now = timezone.now()
     stale = list(JudgeTask.objects.select_related('submission').filter(
         status=JudgeTask.STATUS_LEASED,
@@ -155,6 +159,22 @@ def recycleStaleLeases():
         submission__created_at__lt=now - timedelta(seconds=PENDING_REDISPATCH_SECONDS)))
     for task in pending:
         redispatch(task)
+    # retryable 孤儿兜底（验收 5.2 实测：q2 重投链断裂后无人救活）：
+    # 只兜 claimed_at 为空（无 worker 持有）的任务，防止与在途判题竞争
+    orphan = list(JudgeTask.objects.select_related('submission').filter(
+        status=JudgeTask.STATUS_RETRYABLE, claimed_at__isnull=True))
+    for task in orphan:
+        if getExecutionCount(task.attempt_id) >= MAX_JUDGE_ATTEMPTS:
+            # 执行次数已满：直接判死，避免无限悬挂（attempt_id 闸防并发）
+            markFailed(task, task.attempt_id, '判题多次失败，请联系管理员')
+            continue
+        # 置回 pending 再投递：状态迁移天然防重（下一轮扫描不再命中
+        # retryable）；claimLease 幂等兜住与 q2 重投的并发多投
+        updated = JudgeTask.objects.filter(
+            pk=task.pk, status=JudgeTask.STATUS_RETRYABLE,
+            claimed_at__isnull=True).update(status=JudgeTask.STATUS_PENDING)
+        if updated:
+            redispatch(task)
 
 
 def redispatch(judgeTask):

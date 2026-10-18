@@ -2,15 +2,16 @@
 
 落地方式说明（docs/OJ对接设计.md 8.1 租约回收）：
 django-q2 的定时任务以 DB 记录承载——Q_CLUSTER 配置里的 schedule 键
-在 v2 已移除，运行时由 qcluster 主集群的调度器每分钟扫描 next_run
-到期的 Schedule 记录并投递。本迁移在 migrate 时幂等创建该记录，
+在 v2 已移除，运行时由 qcluster long 集群的调度器每分钟扫描 next_run
+到期的 Schedule 记录并投递（生产只跑 long 集群，排程的 cluster 字段
+必须是 long，否则永远不会被消费）。本迁移在 migrate 时幂等创建该记录，
 避免依赖 django admin 手工配置。
 """
 from django.db import migrations
 
 
 def createRecycleSchedule(apps, schemaEditor):
-    """创建租约回收定时任务：每分钟一次，无限重复（主集群消费）"""
+    """创建租约回收定时任务：每分钟一次，无限重复（long 集群消费）"""
     Schedule = apps.get_model('django_q', 'Schedule')
     # get_or_create 幂等：已存在则不覆盖（手工调整过的配置不被冲掉）
     Schedule.objects.get_or_create(
@@ -20,7 +21,7 @@ def createRecycleSchedule(apps, schemaEditor):
             'schedule_type': 'I',  # Schedule.MINUTES：每 N 分钟
             'minutes': 1,
             'repeats': -1,      # -1 = 无限重复
-            'cluster': '',      # 主集群（调度器只把空 cluster 的排程给默认集群）
+            'cluster': 'long',  # 生产只跑 long 集群，排程必须挂 long 才会被消费
         },
     )
 

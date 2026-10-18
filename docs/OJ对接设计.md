@@ -256,6 +256,7 @@ terminal = accepted | wrong_answer | compile_error | time_limit_exceeded
 - **原子领取**：worker 从 `pending/retryable` 领任务必须原子（SQLite：事务内条件 UPDATE「状态改 leased + attempt_id+1 + claimed_at/heartbeat_at=now」并检查影响行数=1；切 PG 后改 `select_for_update`）——**只有持当前 attempt 的 worker 能写终态、更新进度、清理 fileId**（写操作一律带 attempt_id 条件）
 - **心跳**：每跑完一个测试点更新 `heartbeat_at`（与 progress 同一次写库）
 - **租约回收**：定时任务扫 `leased` 且心跳超 60s → 置 `retryable` + attempt_id+1 + 清 file_id（回收清理残留产物）→ 重新投递
+- **retryable 孤儿兜底**：瞬时错误回退后依赖 q2 retry 重投，但重投链可能断（broker 消息丢失/重试用尽/进程被杀）→ 回收扫描同时兜 `retryable` 且 claimed_at 为空的任务：执行次数有余量 → 置回 `pending` 重新投递（状态迁移防重、claimLease 幂等防并发多投）；余量已尽 → `failed` + system_error 终态（不再悬挂，M8 验收 5.2 实测）
 - **Q2 重试防并发重判**：long 集群 `retry > 最长任务执行时间`（见 8.5 预算），且任务入口的幂等闸按 attempt 判定——过期 attempt 的执行结果直接丢弃
 
 ### 8.2 runJudgeTask 流程（模块级纯函数，参数只传 submissionId）
@@ -679,7 +680,7 @@ v1 经外部设计审查（P0×5 / P1×14 / P2×8），本版修订：
 
 ### v6（2026-10-18，M5 判题主控落地修订）
 
-- **租约回收落地方式**：django-q2 的定时任务以 DB 的 Schedule 记录承载（Q_CLUSTER 配置里的 schedule 键在 v2 已移除），由 qcluster 主集群调度器每分钟扫描 next_run 投递。落地为 `tasks/migrations/0002_create_recycle_schedule.py` 数据迁移（migrate 幂等创建，name=judge-lease-recycle，每分钟无限重复）——`recycleStaleLeases` 除 8.1 的「leased 心跳超 60s 回收」外，附带「pending 超 120s 补投」扫描（受理 on_commit 投递失败兜底）
+- **租约回收落地方式**：django-q2 的定时任务以 DB 的 Schedule 记录承载（Q_CLUSTER 配置里的 schedule 键在 v2 已移除），由 qcluster long 集群调度器每分钟扫描 next_run 投递（**排程的 cluster 字段必须为 long，否则永远不会被消费**——M8 验收 5.1 实测：0002 曾注册为 cluster='' 导致回收从未运行、任务悬挂）。落地为 `tasks/migrations/0002_create_recycle_schedule.py` 数据迁移（migrate 幂等创建，name=judge-lease-recycle，每分钟无限重复）+ `0003_fix_recycle_schedule_cluster.py`（修正已部署库）——`recycleStaleLeases` 除 8.1 的「leased 心跳超 60s 回收」外，附带「pending 超 120s 补投」扫描（受理 on_commit 投递失败兜底）与「retryable 孤儿兜底」扫描（q2 重投链断裂救活，余量用尽转 failed）
 - **编译命令冻结**：`gcc main.c -o main -O2 -std=c11 -lm`（对应 copyOutCached ["main"] 与 args ["./main"]）；Python 直接 `python3 main.py` 内联。gcc/python3 具体版本与标准库清单仍属部署契约（deploy/judge-env.md 待实测后冻结）
 - **沙箱错误重试语义精确化**：用户程序/编译遇 File Error 或 Internal Error（客户端已重试 1 次）→ 任务层转瞬时异常 → 租约回退 retryable（清 file_id + 清理产物）→ 抛给 q2 按 retry=1000s 重投；checker 故障（spj 沙箱级错误）→ 任务内重试 1 次 → 仍失败置 system_error（≠ 用户 WA，不消耗 q2 重试额度）
 - **attempt 执行次数公式**：8.1 回收与领取两处均 attempt_id+1（回收 +1 作废令牌、领取 +1 建立新租约），执行次数 = (attempt_id + 1) // 2；claimLease 后该值 > max_attempts(2) → 直接 failed + system_error（重试上限闸集中在任务入口一处）
