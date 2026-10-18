@@ -1,0 +1,74 @@
+{% extends 'teaching/student_base.html' %}
+
+{% block title %}班级资料 - 学生工作台{% endblock %}
+
+{% block content %}
+<h4 class="fw-bold mb-3">📁 班级资料</h4>
+
+{# 资料列表（由 JS 渲染）：文件名 + 大小 + 上传时间 + 下载按钮 #}
+<div id="materialList"></div>
+
+{# 空状态 #}
+<div id="emptyState" class="card border-0 rounded-4 shadow-sm d-none">
+    <div class="card-body p-5 text-center">
+        <div class="fs-1 mb-3">📂</div>
+        <h5 class="fw-bold">暂无资料</h5>
+        <p class="text-secondary mb-0">老师上传班级资料后会显示在这里</p>
+    </div>
+</div>
+
+<script>
+// ============================================================
+// 前端假数据：后端就绪后删除本段，启用 fetch 版数据源
+// 后端接口规划：
+//   GET  /api/student/materials/                  本班资料列表
+//   GET  /api/student/materials/<id>/download/    受保护下载（先校验班级归属）
+// ============================================================
+const MOCK_MATERIALS = [
+    {id: 1, title: '第一章 课件.pdf', size: '2.4 MB', uploader: '李老师', uploadedAt: '2026-10-12 10:00'},
+    {id: 2, title: '实验指导书（含答案）.docx', size: '856 KB', uploader: '王老师', uploadedAt: '2026-10-08 16:30'},
+    {id: 3, title: '上机练习题.pdf', size: '1.1 MB', uploader: '李老师', uploadedAt: '2026-10-05 09:00'},
+];
+
+// 后端就绪后启用（替换假数据 + 渲染调用）：
+// async function loadMaterials() {
+//     const res = await fetch('/api/student/materials/');
+//     renderMaterials(await res.json());
+// }
+
+// 渲染资料列表：一行一张卡片，下载按钮（后端就绪后指向受保护下载接口）
+function renderMaterials(list) {
+    const container = document.getElementById('materialList');
+    document.getElementById('emptyState').classList.toggle('d-none', list.length > 0);
+    container.innerHTML = list.map(m => `
+        <div class="card border-0 rounded-4 shadow-sm mb-3">
+            <div class="card-body py-3 d-flex justify-content-between align-items-center">
+                <div class="d-flex align-items-center">
+                    <div class="fs-4 me-3">📄</div>
+                    <div>
+                        <div class="fw-bold">${m.title}</div>
+                        <div class="small text-secondary mt-1">
+                            ${m.size} · ${m.uploader} · ${m.uploadedAt}
+                        </div>
+                    </div>
+                </div>
+                <div class="flex-shrink-0 ms-2">
+                    <button class="btn btn-outline-primary btn-sm" onclick="downloadMaterial(${m.id})">
+                        ⬇ 下载
+                    </button>
+                </div>
+            </div>
+        </div>`).join('');
+}
+
+// 下载按钮（后端就绪后改为 window.location 指向 /download/ 接口）
+function downloadMaterial(materialId) {
+    // TODO 后端就绪后：
+    //   window.location.href = '/api/student/materials/' + materialId + '/download/';
+    alert('下载接口后端就绪后接入（本轮为页面预览）');
+}
+
+// 首屏渲染（后端就绪后改为 loadMaterials()）
+renderMaterials(MOCK_MATERIALS);
+</script>
+{% endblock %}

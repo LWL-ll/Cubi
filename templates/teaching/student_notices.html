@@ -1,0 +1,71 @@
+{% extends 'teaching/student_base.html' %}
+
+{% block title %}班级通知 - 学生工作台{% endblock %}
+
+{% block content %}
+<h4 class="fw-bold mb-3">📢 班级通知</h4>
+
+{# 通知列表（由 JS 渲染）：置顶优先，其余按时间倒序；点击展开正文 #}
+<div id="noticeList"></div>
+
+{# 空状态 #}
+<div id="emptyState" class="card border-0 rounded-4 shadow-sm d-none">
+    <div class="card-body p-5 text-center">
+        <div class="fs-1 mb-3">📭</div>
+        <h5 class="fw-bold">暂无通知</h5>
+        <p class="text-secondary mb-0">老师发布班级通知后会显示在这里</p>
+    </div>
+</div>
+
+<script>
+// ============================================================
+// 前端假数据：后端就绪后删除本段，启用 fetch 版数据源
+// 后端接口规划：GET /api/student/notices/（本班通知，置顶优先，时间倒序，分页）
+// ============================================================
+const MOCK_NOTICES = [
+    {id: 1, title: '关于期中考试的安排通知', author: '李老师',
+     createdAt: '2026-10-15 09:30', isPinned: true,
+     content: '期中考试定于 10 月 28 日进行，请同学们提前复习第一章至第四章内容。考试范围以课堂讲解和课后作业为主。'},
+    {id: 2, title: '第二章作业已发布', author: '李老师',
+     createdAt: '2026-10-13 14:00', isPinned: false,
+     content: '第二章《数组与指针》作业已发布，截止时间为 10 月 22 日 23:59，请按时完成。'},
+    {id: 3, title: '机房维护通知', author: '王老师',
+     createdAt: '2026-10-10 08:00', isPinned: false,
+     content: '本周六机房进行系统维护，实验课顺延至下周三，请相互转告。'},
+];
+
+// 后端就绪后启用（替换假数据 + 渲染调用）：
+// async function loadNotices() {
+//     const res = await fetch('/api/student/notices/');
+//     renderNotices(await res.json());
+// }
+
+// 渲染通知列表：每条一个可折叠卡片（置顶的带 📌 标记）
+function renderNotices(list) {
+    const container = document.getElementById('noticeList');
+    document.getElementById('emptyState').classList.toggle('d-none', list.length > 0);
+    container.innerHTML = list.map(n => `
+        <div class="card border-0 rounded-4 shadow-sm mb-3">
+            <div class="card-body p-3" data-bs-toggle="collapse" data-bs-target="#noticeBody${n.id}"
+                 role="button">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div class="fw-bold">
+                        ${n.isPinned ? '<span class="me-1" title="置顶">📌</span>' : ''}${n.title}
+                    </div>
+                    <div class="small text-secondary flex-shrink-0 ms-2">
+                        ${n.author} · ${n.createdAt}
+                    </div>
+                </div>
+            </div>
+            <div class="collapse" id="noticeBody${n.id}">
+                <div class="card-body pt-0 border-top">
+                    <div class="text-secondary" style="white-space: pre-line;">${n.content}</div>
+                </div>
+            </div>
+        </div>`).join('');
+}
+
+// 首屏渲染（后端就绪后改为 loadNotices()）
+renderNotices(MOCK_NOTICES);
+</script>
+{% endblock %}

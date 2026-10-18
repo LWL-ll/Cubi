@@ -1,0 +1,165 @@
+{% extends 'teaching/student_base.html' %}
+
+{% block title %}作业详情 - 学生工作台{% endblock %}
+
+{% block content %}
+{# 返回列表 #}
+<a href="{% url 'student_homeworks' %}" class="btn btn-outline-secondary btn-sm mb-3">← 返回作业列表</a>
+
+<h4 class="fw-bold mb-3">📝 作业详情</h4>
+
+<div class="row g-3">
+    <div class="col-lg-8">
+        {# 作业信息卡 #}
+        <div class="card border-0 rounded-4 shadow-sm mb-3">
+            <div class="card-body p-4">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <h5 class="fw-bold mb-2" id="hwTitle">——</h5>
+                        <div class="small text-secondary" id="hwMeta">——</div>
+                    </div>
+                    <span class="badge text-bg-success" id="hwDeadlineBadge">截止 2026-10-20 23:59</span>
+                </div>
+                <hr>
+                <div id="hwContent" class="text-secondary">——</div>
+            </div>
+        </div>
+
+        {# 教师反馈卡（已批改时显示：评语 + 答案/讲解） #}
+        <div class="card border-0 rounded-4 shadow-sm mb-3 d-none" id="feedbackCard">
+            <div class="card-body p-4">
+                <h6 class="fw-bold mb-3">💬 教师反馈</h6>
+                <div class="mb-3">
+                    <div class="small text-secondary mb-1">教师评语</div>
+                    <div id="hwComment">——</div>
+                </div>
+                <div>
+                    <div class="small text-secondary mb-1">答案 / 讲解</div>
+                    <div id="hwAnswer">——</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-4">
+        {# 我的提交卡：按状态显示三种形态（未提交→表单 / 已提交→展示+修改 / 已截止未交→提示） #}
+        <div class="card border-0 rounded-4 shadow-sm">
+            <div class="card-body p-4">
+                <h6 class="fw-bold mb-3">📤 我的提交</h6>
+
+                {# 形态一：未提交（截止前）——提交表单 #}
+                <div id="submitForm">
+                    <div class="mb-3">
+                        <label class="form-label small text-secondary">文字作答</label>
+                        <textarea id="answerInput" class="form-control" rows="6"
+                                  placeholder="在这里输入你的作业内容…"></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label small text-secondary">图片附件（拍照上传，jpg/png，≤5MB）</label>
+                        <input type="file" id="fileInput" class="form-control" accept="image/jpeg,image/png" multiple>
+                        <div class="small text-secondary mt-1">可多选，照片请尽量拍清楚</div>
+                    </div>
+                    <button class="btn btn-primary w-100" onclick="submitHomework()">提交作业</button>
+                </div>
+
+                {# 形态二：已提交（截止前可修改）——展示我的提交 + 修改按钮 #}
+                <div id="submittedView" class="d-none">
+                    <div class="small text-secondary mb-1">我的作答</div>
+                    <div id="myContent" class="mb-2">——</div>
+                    <div id="myAttachment" class="mb-3"></div>
+                    <div class="small text-secondary mb-3" id="submittedAt"></div>
+                    <button class="btn btn-outline-primary btn-sm w-100" onclick="toggleEdit(true)">修改提交</button>
+                </div>
+
+                {# 形态三：已截止未交 #}
+                <div id="missedView" class="d-none text-center py-4">
+                    <div class="fs-1 mb-2">⏰</div>
+                    <div class="fw-bold text-danger">已过截止时间</div>
+                    <div class="small text-secondary mt-1">该作业已截止，未能提交</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// ============================================================
+// 前端假数据：后端就绪后删除本段，启用 fetch 版数据源
+// 后端接口规划：
+//   GET  /api/student/homeworks/<id>/       作业详情 + 我的提交 + 评语
+//   POST /api/student/homeworks/<id>/submit/  提交（multipart）
+// 注意：页面用 URL 里的作业 id（当前占位，后端轮接入真实数据）
+// ============================================================
+const HOMEWORK_ID = {{ homeworkId }};
+
+// 演示用作业数据（真实数据按 HOMEWORK_ID 从 API 取）
+const MOCK_DETAIL = {
+    title: '第一章 程序设计基础练习',
+    teacherName: '李老师',
+    deadline: '2026-10-20 23:59',
+    content: '1. 用 C 语言实现冒泡排序，并分析时间复杂度。\n2. 简述指针和数组的区别。\n3. 完成教材第 45 页练习题 2、3、5。',
+    status: 'pending',            // pending 未提交 / submitted 已提交 / reviewed 已批改 / missed 已截止未交
+    myContent: '',                // 我的作答（已提交时）
+    myAttachment: null,           // 我的附件（已提交时）
+    submittedAt: '',              // 提交时间
+    comment: '',                  // 教师评语
+    answer: '',                   // 教师答案/讲解
+    score: null,
+};
+
+// 后端就绪后启用（替换假数据 + 渲染调用）：
+// async function loadDetail() {
+//     const res = await fetch('/api/student/homeworks/' + HOMEWORK_ID + '/');
+//     renderDetail(await res.json());
+// }
+
+// 渲染页面：按提交状态切换三个形态 + 填充作业信息
+function renderDetail(hw) {
+    document.getElementById('hwTitle').textContent = hw.title;
+    document.getElementById('hwMeta').textContent = hw.teacherName + ' 发布';
+    document.getElementById('hwDeadlineBadge').textContent = '截止 ' + hw.deadline;
+    document.getElementById('hwContent').textContent = hw.content;
+
+    // 教师反馈区（已批改且有评语/答案时显示）
+    const feedbackCard = document.getElementById('feedbackCard');
+    if (hw.status === 'reviewed' && (hw.comment || hw.answer)) {
+        feedbackCard.classList.remove('d-none');
+        document.getElementById('hwComment').textContent = hw.comment || '——';
+        document.getElementById('hwAnswer').textContent = hw.answer || '——';
+    }
+
+    // 三个形态只显示一个（已提交和已批改都展示我的提交内容）
+    const isSubmitted = hw.status === 'submitted' || hw.status === 'reviewed';
+    document.getElementById('submitForm').classList.toggle('d-none', isSubmitted);
+    document.getElementById('missedView').classList.toggle('d-none', hw.status !== 'missed');
+    document.getElementById('submittedView').classList.toggle('d-none', !isSubmitted);
+    if (isSubmitted) {
+        document.getElementById('myContent').textContent = hw.myContent || '（未填写文字作答）';
+        document.getElementById('myAttachment').innerHTML = hw.myAttachment
+            ? `<span class="badge text-bg-light border">📎 ${hw.myAttachment}</span>` : '';
+        document.getElementById('submittedAt').textContent = '提交于 ' + hw.submittedAt;
+    }
+}
+
+// 提交按钮（前端校验先行；后端就绪后改为 fetch POST multipart 到 /submit/）
+function submitHomework() {
+    const content = document.getElementById('answerInput').value.trim();
+    if (!content) { alert('请先填写作业内容'); return; }
+    // TODO 后端就绪后：
+    //   const formData = new FormData();
+    //   formData.append('content', content);
+    //   document.getElementById('fileInput').files 逐张 append('attachment', f)
+    //   fetch POST → 成功后 renderDetail 刷新为 submitted 状态
+    alert('提交接口后端就绪后接入（本轮为页面预览）');
+}
+
+// 修改提交：切回表单形态并回填已有内容
+function toggleEdit(show) {
+    document.getElementById('submittedView').classList.toggle('d-none', show);
+    document.getElementById('submitForm').classList.toggle('d-none', !show);
+}
+
+// 首屏渲染（后端就绪后改为 loadDetail()）
+renderDetail(MOCK_DETAIL);
+</script>
+{% endblock %}

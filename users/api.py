@@ -4,7 +4,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from .permissions import GROUP_NAMES, PERM_CODES, getGroupKey, hasPerm
+from .permissions import GROUP_NAMES, PERM_CODES, getGroupKey
 
 
 @api_view(['POST'])
@@ -48,7 +48,11 @@ def apiMe(request):
     """
     user = request.user
     groupKey = getGroupKey(user)
-    permCodes = [code for code in PERM_CODES if hasPerm(user, code)]
+    # 一次取出全部权限再比对，避免逐个 hasPerm 触发多次权限查询
+    # get_all_permissions 返回形如 'users.class_manage' 的字符串集合（超级用户返回全部）
+    permSet = user.get_all_permissions()
+    permCodes = [code for code, codename in PERM_CODES.items()
+                 if f'users.{codename}' in permSet]
     return Response({
         'username': user.username,
         'name': user.name,

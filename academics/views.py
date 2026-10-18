@@ -1,7 +1,6 @@
 import io
 
 from django.contrib import messages
-from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import Group
 from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
@@ -9,7 +8,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from openpyxl import load_workbook
 
 from users.models import User
-from users.permissions import hasPerm
+from users.permissions import hasPerm, requirePerm
 
 from .models import Clazz, College, Course, CourseCollege
 from .student_no import parseStudentNo
@@ -207,7 +206,7 @@ def unsetCourseCollegeLeader(cc):
 
 # ---------- 页面视图 ----------
 
-@login_required
+@requirePerm('class:manage')
 def renderImportPage(request):
     """批量导入页：导入课程 / 导入教师 / 导入班级学生（xlsx 上传）
 
@@ -240,14 +239,14 @@ def renderImportPage(request):
     return render(request, 'office/import.html')
 
 
-@login_required
+@requirePerm('course:manage')
 def renderCourseList(request):
     """课程列表：展示已导入的全部课程及开设学院数"""
     courses = Course.objects.all().prefetch_related('course_colleges__college')
     return render(request, 'office/course_list.html', {'courses': courses})
 
 
-@login_required
+@requirePerm('course:manage')
 def renderCourseDetail(request, courseId):
     """课程设置页：展示已开设学院列表，下拉添加学院进入 课程×学院 设置"""
     course = get_object_or_404(Course, id=courseId)
@@ -275,7 +274,7 @@ def renderCourseDetail(request, courseId):
         'course': course, 'ccList': ccList, 'availableColleges': availableColleges})
 
 
-@login_required
+@requirePerm('course:manage')
 def renderCourseCollege(request, courseId, collegeId):
     """课程×学院 设置页：课程组组长、本课程教师池、本课程班级"""
     cc = get_object_or_404(CourseCollege, course_id=courseId, college_id=collegeId)
@@ -343,7 +342,7 @@ def renderCourseCollege(request, courseId, collegeId):
         'clazzes': clazzes, 'teachers': teachers, 'availableClazzes': availableClazzes})
 
 
-@login_required
+@requirePerm('class:manage')
 def renderClassDetail(request, courseId, collegeId, clazzId):
     """班级详情：分配/移除教师（下拉或工号添加）、导入学生到本班、查看学生列表
 

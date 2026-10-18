@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}教师工作台 - CodeMind{% endblock %}</title>
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+    {% load static %}
+    <link href="{% static 'users/style.css' %}" rel="stylesheet">
+</head>
+<body class="office-body">
+    <div class="d-flex">
+        {# 左侧导航栏：头像 + 菜单 + 退出登录（布局与教务工作台一致） #}
+        <aside class="office-sidebar d-flex flex-column">
+            <div class="text-center py-4">
+                {% with displayName=user.name|default:user.username %}
+                <div class="avatar mx-auto">{{ displayName|first }}</div>
+                <div class="fw-bold text-white mt-2">{{ displayName }}</div>
+                {% endwith %}
+                <div class="small text-white-50">教师工作台</div>
+            </div>
+            <nav class="flex-grow-1">
+                <a class="office-nav {% if request.resolver_match.url_name == 'teacher_clazz_list' or request.resolver_match.url_name == 'teacher_clazz_detail' %}active{% endif %}"
+                   href="{% url 'teacher_clazz_list' %}">🏫 我的班级</a>
+                <a class="office-nav {% if request.resolver_match.url_name == 'teacher_question_bank' %}active{% endif %}"
+                   href="{% url 'teacher_question_bank' %}">📝 作业题库</a>
+            </nav>
+            <div class="p-3">
+                <form method="post" action="{% url 'logout' %}">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-outline-light btn-sm w-100">退出登录</button>
+                </form>
+            </div>
+        </aside>
+
+        {# 右侧内容区 #}
+        <main class="flex-grow-1 p-4">
+            {% if messages %}
+                {% for message in messages %}
+                <div class="alert alert-{{ message.tags|default:'info' }} alert-dismissible fade show py-2" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                {% endfor %}
+            {% endif %}
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+    <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

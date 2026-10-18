@@ -16,7 +16,8 @@ class User(AbstractUser):
     class Meta:
         verbose_name = '用户'
         verbose_name_plural = '用户'
-        # 注册全部细粒度权限点（按 xmind《用户权限》逐条翻译，共 18 个）
+        # 注册全部细粒度权限点（教师权限按《教师.xmind》2026-10-13 重新设计，共 21 个）
+        # 注意：教师的所有权限在业务接口里还要做「仅限教学班级」的对象级校验
         permissions = [
             # ---- 教务 ----
             ('class_manage', '全校班级增删改查'),
@@ -24,21 +25,26 @@ class User(AbstractUser):
             ('course_manage', '全校课程增删改查'),
             ('course_assign_class', '分配班级到课程'),
             ('user_assign_role', '指定课程组组长'),
-            # ---- 课程组 ----
-            ('material_manage', '资料管理增删改查'),
-            ('knowledge_manage', '知识库管理'),
-            ('question_bank_manage', '题库管理增删改查'),
-            ('chapter_manage', '课程章节设置'),
-            # ---- 教师 ----
+            # ---- 课程组（2026-10-13 按《课题组.xmind》重新设计）----
+            ('knowledge_manage', 'AI Agent知识库增删改查'),
+            ('material_class_visible', '课程下班级资料增删改查'),
+            ('question_bank_manage', '作业题库增删改查'),
+            ('chapter_manage', '课程章节设计'),
+            # ---- 教师（仅限教学班级）----
             ('notice_manage', '班级通知增删改查'),
-            ('analysis_view', '学情分析查看'),
+            ('analysis_view', '班级学情分析图表查看'),
+            ('material_class_manage', '班级内部资料增删改查'),
             ('homework_publish', '作业发布'),
             ('homework_bank', '作业题库管理'),
             ('homework_remind', '作业提醒'),
-            ('homework_collect', '作业回收'),
-            ('homework_ai', 'AI分析学生'),
+            ('homework_comment', '作业评语增删改查'),
+            ('homework_answer', '作业答案改查'),
+            ('homework_ai', 'Agent分析学生改查'),
             # ---- 学生 ----
             ('homework_view', '作业查看与提交'),
+            ('notice_view', '查看班级通知'),
+            ('material_view', '查看班级资料'),
+            ('analysis_view_self', '查看自己的学生画像'),
             # ---- 通用 ----
             ('profile_edit', '修改个人资料'),
         ]

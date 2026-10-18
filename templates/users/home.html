@@ -35,6 +35,18 @@
                         <a href="{% url 'office_course_list' %}" class="btn btn-primary w-100 py-2">🏫 进入教务工作台</a>
                     </div>
                     {% endif %}
+                    {# 教师（含课程组组长，组长同时也是教师）显示教师工作台入口 #}
+                    {% if groupKey == 'teacher' or groupKey == 'course_team' %}
+                    <div class="mb-2">
+                        <a href="{% url 'teacher_clazz_list' %}" class="btn btn-primary w-100 py-2">👩‍🏫 进入教师工作台</a>
+                    </div>
+                    {% endif %}
+                    {# 学生显示学生工作台入口 #}
+                    {% if groupKey == 'student' %}
+                    <div class="mb-2">
+                        <a href="{% url 'student_home' %}" class="btn btn-primary w-100 py-2">🎓 进入学生工作台</a>
+                    </div>
+                    {% endif %}
                     {# 登出用 POST 表单，防止 CSRF 强制登出 #}
                     <form method="post" action="{% url 'logout' %}">
                         {% csrf_token %}

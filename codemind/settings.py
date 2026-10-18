@@ -44,6 +44,8 @@ INSTALLED_APPS = [
     'axes',
     # 教务业务：课程、班级、导入
     'academics',
+    # 教师工作台：班级通知、学情分析、班级资料、作业、批改、个人题库
+    'teaching',
     # REST API 框架（前后端分离）
     'rest_framework',
 ]

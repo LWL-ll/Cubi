@@ -23,6 +23,12 @@ urlpatterns = [
     path('', include('users.urls')),
     # 挂载教务工作台页面路由（批量导入、课程管理、班级管理，开发预览用）
     path('office/', include('academics.urls')),
+    # 挂载教师工作台页面路由（我的班级、题库，开发预览用）
+    path('teacher/', include('teaching.urls')),
+    # 挂载学生工作台页面路由（我的作业、学生画像、个人资料，开发预览用）
+    path('student/', include('teaching.student_urls')),
     # 挂载前后端分离 API 路由（课程、班级、导入）
     path('api/', include('academics.api_urls')),
+    # 挂载教师工作台 API 路由（我的教学班级）
+    path('api/teacher/', include('teaching.api_urls')),
 ]

@@ -20,21 +20,26 @@ PERM_CODES = {
     'course:manage': 'course_manage',
     'course:assign_class': 'course_assign_class',
     'user:assign_role': 'user_assign_role',
-    # 课程组
-    'material:manage': 'material_manage',
+    # 课程组（2026-10-13 按《课题组.xmind》重新设计）
     'knowledge:manage': 'knowledge_manage',
+    'material:class_visible': 'material_class_visible',
     'question_bank:manage': 'question_bank_manage',
     'chapter:manage': 'chapter_manage',
-    # 教师
+    # 教师（仅限教学班级，2026-10-13 按《教师.xmind》重新设计）
     'notice:manage': 'notice_manage',
     'analysis:view': 'analysis_view',
+    'material:class_manage': 'material_class_manage',
     'homework:publish': 'homework_publish',
     'homework:bank': 'homework_bank',
     'homework:remind': 'homework_remind',
-    'homework:collect': 'homework_collect',
+    'homework:comment': 'homework_comment',
+    'homework:answer': 'homework_answer',
     'homework:ai': 'homework_ai',
     # 学生
     'homework:view': 'homework_view',
+    'notice:view': 'notice_view',
+    'material:view': 'material_view',
+    'analysis:view_self': 'analysis_view_self',
     # 通用
     'profile:edit': 'profile_edit',
 }
@@ -47,16 +52,24 @@ GROUP_NAMES = {
     'student': '学生',
 }
 
+# 分组判定优先级（按顺序匹配，取第一个命中的分组）
+# 课程组组长同时也是教师，组长身份优先显示
+GROUP_PRIORITY = ['admin', 'course_team', 'teacher', 'student']
+
 # 每个分组拥有的权限码（按 xmind 分配；数据迁移据此建组）
 GROUP_PERMISSIONS = {
     'admin': ['class:manage', 'class:assign_teacher', 'course:manage',
               'course:assign_class', 'user:assign_role', 'profile:edit'],
-    'course_team': ['material:manage', 'knowledge:manage',
+    # 课程组权限（2026-10-13 按《课题组.xmind》重新设计）
+    'course_team': ['knowledge:manage', 'material:class_visible',
                     'question_bank:manage', 'chapter:manage', 'profile:edit'],
-    'teacher': ['notice:manage', 'analysis:view', 'material:manage',
+    # 教师权限（2026-10-13 按《教师.xmind》重新设计，所有权限仅限教学班级）
+    'teacher': ['notice:manage', 'analysis:view', 'material:class_manage',
                 'homework:publish', 'homework:bank', 'homework:remind',
-                'homework:collect', 'homework:ai', 'profile:edit'],
-    'student': ['homework:view', 'profile:edit'],
+                'homework:comment', 'homework:answer', 'homework:ai',
+                'profile:edit'],
+    'student': ['homework:view', 'notice:view', 'material:view',
+                'analysis:view_self', 'profile:edit'],
 }
 
 
@@ -71,11 +84,14 @@ def hasPerm(user, code):
 
 
 def getGroupKey(user):
-    """返回用户所在分组的 key；超级用户返回 'superuser'；无分组返回 None"""
+    """返回用户所在分组的 key；超级用户返回 'superuser'；无分组返回 None
+
+    按 GROUP_PRIORITY 显式优先级匹配（组长同时也是教师时返回课程组）。
+    """
     if user.is_superuser:
         return 'superuser'
-    for key, name in GROUP_NAMES.items():
-        if user.groups.filter(name=name).exists():
+    for key in GROUP_PRIORITY:
+        if user.groups.filter(name=GROUP_NAMES[key]).exists():
             return key
     return None
 
@@ -110,3 +126,47 @@ class PermRequired(BasePermission):
         if permCode is None:
             return True
         return hasPerm(request.user, permCode)
+
+
+class IsTeacherGroup(BasePermission):
+    """DRF 权限类：仅「教师」分组（或超级用户）可访问（教师工作台 API 用）
+
+    与页面的 requireTeacherGroup 装饰器对应：课程组组长同时也是教师，
+    故教师组存在即放行。
+    """
+    def has_permission(self, request, view):
+        user = request.user
+        if not user.is_authenticated:
+            return False
+        if user.is_superuser:
+            return True
+        return user.groups.filter(name=GROUP_NAMES['teacher']).exists()
+
+
+class IsStudentGroup(BasePermission):
+    """DRF 权限类：仅「学生」分组（或超级用户）可访问（学生工作台 API 用）
+
+    与页面的 requireStudentGroup 装饰器对应：学生 API 的统一入口校验，
+    对象级边界（所在班级）由 getStudentClazz 在业务接口内校验。
+    """
+    def has_permission(self, request, view):
+        user = request.user
+        if not user.is_authenticated:
+            return False
+        if user.is_superuser:
+            return True
+        return user.groups.filter(name=GROUP_NAMES['student']).exists()
+
+
+class IsCourseTeamGroup(BasePermission):
+    """DRF 权限类：仅「课程组」分组（或超级用户）可访问（课程组 API 用）
+
+    课程组功能（知识库/课程组资料/题库/章节）落地时的 API 入口校验。
+    """
+    def has_permission(self, request, view):
+        user = request.user
+        if not user.is_authenticated:
+            return False
+        if user.is_superuser:
+            return True
+        return user.groups.filter(name=GROUP_NAMES['course_team']).exists()

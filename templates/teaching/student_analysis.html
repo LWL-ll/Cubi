@@ -1,0 +1,102 @@
+{% extends 'teaching/student_base.html' %}
+
+{% block title %}学生画像 - 学生工作台{% endblock %}
+
+{% block content %}
+<h4 class="fw-bold mb-3">📊 学生画像</h4>
+
+{# 指标卡行：作业总数 / 完成率 / 按时提交率 / 待完成 #}
+<div class="row g-3 mb-3" id="statCards"></div>
+
+<div class="row g-3">
+    {# 最近提交记录（表格：作业 / 提交时间 / 是否按时 / 状态） #}
+    <div class="col-lg-8">
+        <div class="card border-0 rounded-4 shadow-sm">
+            <div class="card-body p-4">
+                <h6 class="fw-bold mb-3">🕐 最近提交记录</h6>
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>作业</th>
+                                <th>提交时间</th>
+                                <th>按时提交</th>
+                                <th>状态</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recentTable"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {# 图表占位卡：学情指标定稿后接入图表（数据从 API 取，前端渲染） #}
+    <div class="col-lg-4">
+        <div class="card border-0 rounded-4 shadow-sm">
+            <div class="card-body p-4">
+                <h6 class="fw-bold mb-3">📈 提交趋势</h6>
+                <div class="text-center py-5">
+                    <div class="fs-1 mb-2">🚧</div>
+                    <div class="small text-secondary">趋势图待画像指标定稿后接入</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// ============================================================
+// 前端假数据：后端就绪后删除本段，启用 fetch 版数据源
+// 后端接口规划：GET /api/student/analysis/（指标 + 提交记录，由作业数据实时计算）
+// ============================================================
+const MOCK_ANALYSIS = {
+    stats: [
+        {label: '作业总数', value: 12, icon: '📚'},
+        {label: '已完成', value: 10, icon: '✅'},
+        {label: '完成率', value: '83%', icon: '🎯'},
+        {label: '按时提交率', value: '80%', icon: '⏱️'},
+    ],
+    recent: [
+        {hwTitle: '第四章 结构体作业', submittedAt: '2026-10-14 22:10', onTime: true,  status: '已批改', score: 92},
+        {hwTitle: '第三章 函数作业',   submittedAt: '2026-10-09 23:40', onTime: true,  status: '已批改', score: 85},
+        {hwTitle: '第二章 数组与指针作业', submittedAt: '2026-10-01 08:15', onTime: false, status: '已批改', score: 78},
+    ],
+};
+
+// 后端就绪后启用（替换假数据 + 渲染调用）：
+// async function loadAnalysis() {
+//     const res = await fetch('/api/student/analysis/');
+//     renderAnalysis(await res.json());
+// }
+
+// 渲染指标卡：四个统计块（结构定型后，指标增删只动数据不动布局）
+function renderAnalysis(data) {
+    document.getElementById('statCards').innerHTML = data.stats.map(s => `
+        <div class="col-md-3 col-6">
+            <div class="card border-0 rounded-4 shadow-sm h-100">
+                <div class="card-body p-3 text-center">
+                    <div class="fs-3">${s.icon}</div>
+                    <div class="fs-4 fw-bold">${s.value}</div>
+                    <div class="small text-secondary">${s.label}</div>
+                </div>
+            </div>
+        </div>`).join('');
+
+    document.getElementById('recentTable').innerHTML = data.recent.map(r => `
+        <tr>
+            <td class="fw-bold">${r.hwTitle}</td>
+            <td class="small">${r.submittedAt}</td>
+            <td>${r.onTime
+                ? '<span class="badge text-bg-success">按时</span>'
+                : '<span class="badge text-bg-warning">迟交</span>'}</td>
+            <td>${r.score != null
+                ? `${r.status} · ${r.score} 分`
+                : r.status}</td>
+        </tr>`).join('');
+}
+
+// 首屏渲染（后端就绪后改为 loadAnalysis()）
+renderAnalysis(MOCK_ANALYSIS);
+</script>
+{% endblock %}

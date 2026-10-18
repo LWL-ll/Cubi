@@ -1,0 +1,121 @@
+{% extends 'teaching/student_base.html' %}
+
+{% block title %}我的作业 - 学生工作台{% endblock %}
+
+{% block content %}
+<h4 class="fw-bold mb-3">📝 我的作业</h4>
+
+{# 状态筛选 Tab：全部 / 待提交 / 已提交 / 已批改 / 已截止 #}
+<ul class="nav nav-pills mb-3" id="homeworkFilter">
+    <li class="nav-item">
+        <button class="nav-link active" data-filter="all">全部</button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" data-filter="pending">待提交</button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" data-filter="submitted">已提交</button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" data-filter="reviewed">已批改</button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" data-filter="missed">已截止</button>
+    </li>
+</ul>
+
+{# 作业卡片列表（由 JS 渲染：假数据先行，后端就绪后改 fetch 数据源） #}
+<div id="homeworkList"></div>
+
+{# 空状态（无作业或筛选无结果时显示） #}
+<div id="emptyState" class="card border-0 rounded-4 shadow-sm d-none">
+    <div class="card-body p-5 text-center">
+        <div class="fs-1 mb-3">🎉</div>
+        <h5 class="fw-bold">这里空空如也</h5>
+        <p class="text-secondary mb-0">当前筛选条件下没有作业</p>
+    </div>
+</div>
+
+<script>
+// ============================================================
+// 前端假数据：后端就绪后删除本段，启用下方 fetch 版数据源
+// 后端接口规划：GET /api/student/homeworks/（含我的提交状态）
+// ============================================================
+const MOCK_HOMEWORKS = [
+    {id: 1, title: '第一章 程序设计基础练习', teacherName: '李老师',
+     deadline: '2026-10-20 23:59', status: 'submitted'},
+    {id: 2, title: '第二章 数组与指针作业', teacherName: '李老师',
+     deadline: '2026-10-22 23:59', status: 'pending'},
+    {id: 3, title: '第三章 函数作业', teacherName: '王老师',
+     deadline: '2026-10-10 23:59', status: 'missed'},
+    {id: 4, title: '第四章 结构体作业', teacherName: '王老师',
+     deadline: '2026-10-14 23:59', status: 'reviewed', score: 92},
+];
+
+// 后端就绪后启用（替换上面假数据 + 渲染调用）：
+// async function loadHomeworks() {
+//     const res = await fetch('/api/student/homeworks/');
+//     const data = await res.json();
+//     renderHomeworks(data, currentFilter);
+// }
+
+// 状态徽章配置：status -> {文案, 颜色, 说明}
+const STATUS_BADGES = {
+    pending:   {text: '未提交',   color: 'text-bg-danger',    tip: '请尽快完成并提交'},
+    submitted: {text: '已提交',   color: 'text-bg-success',   tip: '等待老师批改'},
+    reviewed:  {text: '已批改',   color: 'text-bg-primary',   tip: '老师已批改，可查看评语'},
+    missed:    {text: '已截止未交', color: 'text-bg-secondary', tip: '该作业已过截止时间'},
+};
+
+let currentFilter = 'all';
+
+// 渲染作业卡片列表（结构定型后，后端数据接入只换数据源不改结构）
+function renderHomeworks(list, filter) {
+    const filtered = filter === 'all' ? list : list.filter(h => h.status === filter);
+    const container = document.getElementById('homeworkList');
+    document.getElementById('emptyState').classList.toggle('d-none', filtered.length > 0);
+    container.innerHTML = filtered.map(h => {
+        const badge = STATUS_BADGES[h.status];
+        const detailUrl = '{% url "student_homework_detail" 0 %}'.replace('/0', '/' + h.id);
+        const scoreHtml = (h.score != null)
+            ? `<span class="badge text-bg-light border ms-1">得分 ${h.score}</span>` : '';
+        return `
+        <a href="${detailUrl}" class="text-decoration-none">
+            <div class="card border-0 rounded-4 shadow-sm mb-3 homework-card">
+                <div class="card-body py-3 d-flex justify-content-between align-items-center">
+                    <div>
+                        <div class="fw-bold text-dark">${h.title}</div>
+                        <div class="small text-secondary mt-1">
+                            ${h.teacherName} · 截止 ${h.deadline}
+                        </div>
+                    </div>
+                    <div class="text-end">
+                        <span class="badge ${badge.color}">${badge.text}</span>${scoreHtml}
+                        <div class="small text-secondary mt-1">${badge.tip}</div>
+                    </div>
+                </div>
+            </div>
+        </a>`;
+    }).join('');
+}
+
+// 筛选 Tab 切换（点击高亮 + 按状态过滤）
+document.getElementById('homeworkFilter').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-filter]');
+    if (!btn) return;
+    document.querySelectorAll('#homeworkFilter .nav-link').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentFilter = btn.dataset.filter;
+    renderHomeworks(MOCK_HOMEWORKS, currentFilter);
+});
+
+// 首屏渲染（后端就绪后改为 loadHomeworks()）
+renderHomeworks(MOCK_HOMEWORKS, 'all');
+</script>
+
+<style>
+    /* 作业卡片悬浮效果：轻微上浮，提示可点击进入详情 */
+    .homework-card { transition: transform 0.15s ease, box-shadow 0.15s ease; }
+    .homework-card:hover { transform: translateY(-2px); box-shadow: 0 0.5rem 1rem rgba(0,0,0,0.08) !important; }
+</style>
+{% endblock %}
