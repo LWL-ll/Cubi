@@ -54,8 +54,12 @@ INSTALLED_APPS = [
     'academics',
     # 教师工作台：班级通知、学情分析、班级资料、作业、批改、个人题库
     'teaching',
+    # 异步任务统一记录（AsyncTask 表，见 docs/异步任务设计.md）
+    'tasks',
     # REST API 框架（前后端分离）
     'rest_framework',
+    # 异步任务队列（django-q2：导入、判题等长任务）
+    'django_q',
 ]
 
 # DRF 配置：会话认证（浏览器演示直接可用），默认要求登录
@@ -204,3 +208,41 @@ OJ_AUTH_TOKEN = os.environ.get('OJ_AUTH_TOKEN', '')
 # 单次判题 HTTP 超时（秒）：必须大于单题最大 clockLimit（当前 10s 档），留网络余量
 OJ_RUN_TIMEOUT = 30
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True  # 关闭浏览器会话即失效
+
+# ==================== 异步任务队列（django-q2）====================
+# worker 独立进程运行：python manage.py qcluster
+# broker 用 Django ORM（django_q_ormq 表），无需 Redis 等中间件
+# 设计依据：docs/异步任务设计.md 第五章；判题集群参数：docs/OJ对接设计.md
+Q_CLUSTER = {
+    'name': 'codemind',        # 集群名（多环境部署区分用）
+    'workers': 2,              # worker 进程数：开发 1，生产 2~4（按 CPU 核数）
+    'timeout': 600,            # 单任务超时（秒）：导入类任务给足 10 分钟
+    'retry': 700,              # 失败重试等待（秒）：必须大于 timeout，
+                               # 否则任务超时被杀前就重投，导致同一任务并发执行
+                               # （django-q2 官方约束，实测警告确认）
+    'max_attempts': 2,         # 最大尝试次数（含首次）——要求任务函数幂等
+    'queue_limit': 50,         # 队列积压上限，防恶意提交撑爆内存
+    'orm': 'default',          # 关键：用 Django ORM 做 broker
+    'poll': 0.5,               # worker 拉取任务的轮询间隔（秒）
+    'save_limit': 250,         # ORM 中保留的队列执行记录条数
+    'catch_up': False,         # worker 停机期间的定时任务不补跑
+    'ack_failures': True,      # 失败任务确认掉，避免卡队列
+    # 备选集群：判题专用 long 集群（独立 qcluster 进程消费）
+    # 启动方式：Q_CLUSTER_NAME=long python manage.py qcluster
+    # 投递方式：async_task(..., cluster='long')
+    # 未列出的项继承主集群配置（django-q2 ALT_CLUSTERS 覆盖机制）
+    'ALT_CLUSTERS': {
+        'long': {
+            'timeout': 900,        # 判题任务超时（秒）：必须大于单题最大
+                                   # clockLimit(10s) × 最大测试点数(20) + 编译
+                                   # (30s) + 网络余量，取 900 留足
+            'retry': 1000,         # 失败重试等待：必须大于 timeout，确保上一个
+                                   # attempt 彻底结束后才会重投，配合业务租约
+                                   # 状态机实现"至多一次生效"（见 OJ对接设计.md）
+            'workers': 2,          # 判题 worker 数：与主集群一致
+            'queue_limit': 50,     # 判题队列积压上限，防恶意提交撑爆内存
+            'max_attempts': 2,     # Q2 层兜底重试一次；业务层由租约状态机
+                                   # 保证重复投递不重复判题
+        },
+    },
+}
