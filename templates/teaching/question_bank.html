@@ -3,12 +3,229 @@
 {% block title %}作业题库 - 教师工作台{% endblock %}
 
 {% block content %}
-<h4 class="fw-bold mb-3">我的作业题库</h4>
-<div class="card shadow-sm border-0">
-    <div class="card-body text-center text-secondary py-5">
-        <div class="fs-1 mb-2">📝</div>
-        <h5>题库功能开发中</h5>
-        <p class="mb-0">教师个人题库（跨班级复用），将在后续轮次实现</p>
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+        <h4 class="fw-bold mb-1">📝 作业题库</h4>
+        <p class="text-secondary small mb-0">
+            公共题库面向整个课程（课程组维护）· 个人题库面向教学班级（自建自用）
+        </p>
+    </div>
+    <div>
+        {% if isCourseTeam %}
+        <button class="btn btn-outline-info btn-sm me-2" onclick="openEditor('public')">＋ 新建公共题</button>
+        {% endif %}
+        <button class="btn btn-primary btn-sm" onclick="openEditor('personal')">＋ 新建题目</button>
     </div>
 </div>
+
+<div class="card shadow-sm border-0">
+    <div class="card-body p-0">
+        <div id="problemList" class="p-3 text-center text-secondary">加载中…</div>
+    </div>
+</div>
+
+{# 录题/编辑模态框：markdown 全文 + 元数据表单
+   编辑语义（12.4/决策 d）= 重传完整 md 全文替换：必须包含
+   input/output 测试块与样例块（服务端永不下发，请从本地源文件粘贴）。 #}
+<div class="modal fade" id="editorModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h6 class="modal-title fw-bold" id="editorTitle">新建题目</h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <label class="form-label small text-secondary">允许语言</label>
+                        <div class="d-flex gap-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="langC" checked>
+                                <label class="form-check-label small" for="langC">C</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="langPython" checked>
+                                <label class="form-check-label small" for="langPython">Python</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label small text-secondary">资源档位</label>
+                        <select id="tier" class="form-select form-select-sm">
+                            <option value="beginner">入门（2s / 256MB）</option>
+                            <option value="basic" selected>基础（2s / 256MB）</option>
+                            <option value="advanced">进阶（5s / 512MB）</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label small text-secondary">比对策略</label>
+                        <select id="compareStrategy" class="form-select form-select-sm">
+                            <option value="exact" selected>精确比对</option>
+                            <option value="trailing">忽略行尾空白</option>
+                            <option value="loose">忽略全部空白</option>
+                        </select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label small text-secondary">
+                            Markdown 全文（标题 + 题面 + ```input-sample/output-sample 样例块 +
+                            ```input/output 测试点块，可选 points=N 标注分值）
+                        </label>
+                        <textarea id="mdText" class="form-control font-monospace" rows="16"
+                                  placeholder="# 两数之和&#10;&#10;给定两个整数，输出它们的和。&#10;&#10;```input-sample&#10;1 2&#10;```&#10;```output-sample&#10;3&#10;```&#10;&#10;```input&#10;1 2&#10;```&#10;```output&#10;3&#10;```"></textarea>
+                        <div id="editWarning" class="alert alert-warning py-2 mt-2 mb-0 small d-none">
+                            ⚠️ 编辑为全文替换：测试块与样例块不会从服务端下发，
+                            请从本地源文件复制<b>包含全部测试数据的完整 markdown</b>再保存。
+                        </div>
+                    </div>
+                </div>
+                <div id="editorError" class="alert alert-danger py-2 mt-3 mb-0 d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">取消</button>
+                <button class="btn btn-primary btn-sm" onclick="submitProblem()">保存题目</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const MAX_PROBLEMS_PER_PAGE = 20;  // 与后端分页一致
+let editingProblemId = null;        // null = 新建；数字 = 编辑中题目 id
+let editingScope = 'personal';      // personal / public（决定 POST 端点）
+let editorModalInstance = null;
+let nextPageUrl = null;
+
+// HTML 转义：题目数据来自用户输入，一律转义防 XSS
+function esc(text) {
+    const div = document.createElement('div');
+    div.textContent = text == null ? '' : String(text);
+    return div.innerHTML;
+}
+
+const TIER_LABELS = {beginner: '入门', basic: '基础', advanced: '进阶'};
+const STRATEGY_LABELS = {exact: '精确比对', trailing: '忽略行尾空白', loose: '忽略全部空白'};
+
+async function loadProblems(url) {
+    const res = await fetch(url);
+    if (!res.ok) { document.getElementById('problemList').textContent = '加载失败'; return; }
+    const data = await res.json();
+    nextPageUrl = data.next;
+    renderProblems(data.results);
+}
+
+function renderProblems(problems) {
+    const container = document.getElementById('problemList');
+    if (!problems.length) {
+        container.innerHTML = '<div class="text-secondary py-3">题库为空，点击右上角「新建题目」录入</div>';
+        return;
+    }
+    const rows = problems.map(p => {
+        const publicBadge = p.isPublic
+            ? '<span class="badge text-bg-info ms-1">公共题库</span>'
+            : '<span class="badge text-bg-light border ms-1">个人题库</span>';
+        const spjBadge = p.hasSpj
+            ? '<span class="badge text-bg-warning ms-1">SPJ</span>' : '';
+        return `
+        <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
+            <div>
+                <div class="fw-bold">${esc(p.title)}${publicBadge}${spjBadge}</div>
+                <div class="small text-secondary">
+                    ${TIER_LABELS[p.tier] || p.tier}
+                    · ${STRATEGY_LABELS[p.compareStrategy] || p.compareStrategy}
+                    · ${p.languages.join('/')}
+                    · 样例 ${p.sampleCount} 组 / 测试点 ${p.testCount} 组
+                    · 修订 v${p.revision}
+                    · ${p.ownerName}
+                </div>
+            </div>
+            <div class="text-nowrap">
+                <button class="btn btn-outline-primary btn-sm" onclick="openEditor('edit', ${p.id})">编辑</button>
+                <button class="btn btn-outline-danger btn-sm" onclick="deleteProblem(${p.id})">删除</button>
+            </div>
+        </div>`;
+    }).join('');
+    // 下一页：追加「加载更多」按钮（服务端分页 20/页）
+    const loadMore = nextPageUrl
+        ? `<button class="btn btn-outline-secondary btn-sm w-100 mt-2"
+                  onclick="loadProblems('${nextPageUrl}')">加载更多</button>` : '';
+    container.innerHTML = rows + loadMore;
+}
+
+async function openEditor(scope, problemId) {
+    editingScope = scope;
+    editingProblemId = problemId || null;
+    document.getElementById('editorError').classList.add('d-none');
+    document.getElementById('editWarning').classList.add('d-none');
+    document.getElementById('mdText').value = '';
+    document.getElementById('langC').checked = true;
+    document.getElementById('langPython').checked = true;
+    document.getElementById('tier').value = 'basic';
+    document.getElementById('compareStrategy').value = 'exact';
+    if (scope === 'edit') {
+        // 编辑回填：仅能回填题面（测试块服务端不下发），并提示补全完整 md
+        const res = await fetch(`/api/teacher/problems/${problemId}/`);
+        if (!res.ok) { alert('题目不存在或无权限'); return; }
+        const detail = await res.json();
+        document.getElementById('editorTitle').textContent = '编辑题目（全文替换）';
+        document.getElementById('mdText').value =
+            `# ${detail.title}\n\n${detail.statementMd}`;
+        document.getElementById('langC').checked = detail.languages.includes('c');
+        document.getElementById('langPython').checked = detail.languages.includes('python');
+        document.getElementById('tier').value = detail.tier;
+        document.getElementById('compareStrategy').value = detail.compareStrategy;
+        document.getElementById('editWarning').classList.remove('d-none');
+    } else {
+        document.getElementById('editorTitle').textContent =
+            scope === 'public' ? '新建公共题（课程组题库）' : '新建题目（个人题库）';
+    }
+    editorModalInstance = new bootstrap.Modal(document.getElementById('editorModal'));
+    editorModalInstance.show();
+}
+
+async function submitProblem() {
+    const errorBox = document.getElementById('editorError');
+    errorBox.classList.add('d-none');
+    const languages = [];
+    if (document.getElementById('langC').checked) languages.push('c');
+    if (document.getElementById('langPython').checked) languages.push('python');
+    const payload = {
+        markdown: document.getElementById('mdText').value,
+        languages: languages,
+        tier: document.getElementById('tier').value,
+        compareStrategy: document.getElementById('compareStrategy').value,
+    };
+    // 新建个人题/公共题走不同端点（端点决定归属，12.3）；编辑走 PUT
+    let url = '/api/teacher/problems/';
+    let method = 'POST';
+    if (editingScope === 'public') url = '/api/teacher/public-problems/';
+    if (editingProblemId != null) {
+        url = `/api/teacher/problems/${editingProblemId}/`;
+        method = 'PUT';
+    }
+    const res = await fetch(url, {
+        method: method,
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+    });
+    if (res.ok) {
+        editorModalInstance.hide();
+        loadProblems('/api/teacher/problems/');
+        return;
+    }
+    const data = await res.json().catch(() => ({}));
+    const detail = Array.isArray(data.detail) ? data.detail.join('；') : data.detail;
+    errorBox.textContent = detail || ('保存失败：' + res.status);
+    errorBox.classList.remove('d-none');
+}
+
+async function deleteProblem(problemId) {
+    if (!confirm('确认删除该题目？被作业引用的题目无法删除。')) return;
+    const res = await fetch(`/api/teacher/problems/${problemId}/`, {method: 'DELETE'});
+    if (res.status === 204) { loadProblems('/api/teacher/problems/'); return; }
+    const data = await res.json().catch(() => ({}));
+    alert(data.detail || '删除失败：' + res.status);
+}
+
+loadProblems('/api/teacher/problems/');
+</script>
 {% endblock %}

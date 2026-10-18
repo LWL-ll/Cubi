@@ -91,8 +91,14 @@ def renderTeacherTeachingClassDetail(request, teachingClassId):
 
 @requireTeacherGroup
 def renderTeacherQuestionBank(request):
-    """教师个人题库（本轮占位，题库功能后续轮次实现）"""
-    return render(request, 'teaching/question_bank.html')
+    """教师题库页：公共题库 + 本人个人题（M7 实装，数据走题库 API）
+
+    课程组标识传给模板：课程组账号额外显示「新建公共题」入口
+    （服务端仍以权限码为最终防线，前端只影响体验）。
+    """
+    return render(request, 'teaching/question_bank.html', {
+        'isCourseTeam': hasPerm(request.user, 'question_bank:manage'),
+    })
 
 
 # ================= 学生工作台（框架轮：页面骨架 + 权限校验，功能按轮次填充） =================

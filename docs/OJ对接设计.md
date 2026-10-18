@@ -514,6 +514,35 @@ POST /run 跑 spj：
 - 代码原文访问：学生仅自己的 code；教师仅自己教学班学生的 code（对象级 404 语义）
 - 学生可见字段白名单：code 原文、自己的 score/time_used 等本人字段；**不含**测试点数据、预期输出、spj 输出、他人提交
 
+### 12.3 录题端点与归属（M6 落地）
+
+- 建题端点决定归属，请求体 isPublic 一律无效：`POST /api/teacher/problems/`（个人题，homework:bank）、`POST /api/teacher/public-problems/`（公共题，question_bank:manage）
+- 教师题库列表 = 公共题库 + 本人个人题（分页 20）；`GET/PUT/DELETE /api/teacher/problems/<id>/` 由服务层对象级判 403/404（教师与课程组权限码不同）
+- 学生题面：`GET /api/problems/<id>/`（homework:view），不按 is_public 过滤（作业里引用的个人题学生要能读）
+- 编辑 = 重传完整 md 全文替换 + revision+1；tests/spj_code 永不下发（教师手里有原始 md 可核对）
+
+### 12.4 作业组卷 API（M7 落地）
+
+**语义（2026-10-18 定稿）**：题库两级——课程组公共题库面向整个课程（跨教学班复用）、教师题库面向教学班级（自建自用）；选题可见集合 = 公共题 + 本人个人题，他人个人题一律 404（防探测）。
+
+| 端点 | 方法 | 权限 | 说明 |
+|---|---|---|---|
+| `/api/teacher/teaching-classes/<id>/homeworks/` | GET/POST | homework:publish + getTeacherTeachingClass | 该班作业列表（题数/提交数聚合）；创建作业 |
+| `/api/teacher/homeworks/<id>/` | GET/PUT/DELETE | homework:publish + getManageableHomework | 详情（题序 + 修订号快照）；编辑；删除 |
+| `/api/homeworks/` | GET | homework:view | 我的作业列表（三态：未开始/进行中/已截止 + 我的提交概况） |
+| `/api/homeworks/<id>/` | GET | homework:view + 3 跳对象级 | 详情（题目学生白名单 + 我的提交摘要）；开始前 404 防提前看题 |
+
+**创建校验**：标题非空 ≤100；开始时间 < 截止时间（ISO 时间，naive 按本机时区补齐）；problemIds 非空、去重、≤20（M7 决策 a）；题目存在且对教师可见；order = 数组序；`problem_revision` 冻结选题时修订号（中间表快照，改题不影响已组作业）。
+
+**编辑语义（PUT 全量）**：
+- 已有提交 → 题目列表锁定（改题 400「已有提交，题目不可变更」），只允许改标题/时间（M7 决策 c）
+- 无提交 → 题目列表整体替换，revision 重新快照（先腾位再写，避开 (homework, order) 唯一约束）
+- 截止时间只允许向后延长（缩短 400，防误伤已规划学生，M7 决策 f）
+
+**删除语义**：无提交可删（连带中间表）；有提交 400（DB 层 Submission.homework PROTECT 兜底，M7 决策 d）。
+
+**学生侧**：列表三态由服务端按当前时间派生；详情开始前 404（防提前看题，列表仍显示「未开始」徽章）；题目列表复用学生题面白名单（不含 tests/spj_code/判题配置）；我的提交摘要仅最近 10 条（页面轮询判题进度）。
+
 ## 十三、资源限制策略（分档）
 
 按题目难度分档（题目的时间/内存限制取档位上限以内，服务端写死下限兜底）：
@@ -660,3 +689,11 @@ v1 经外部设计审查（P0×5 / P1×14 / P2×8），本版修订：
 - **题库两级归属 API 落地**（12.1/12.3）：教师列表 = 公共题库 + 本人个人题（分页 20，按 updated_at 倒序）；建题端点决定归属——`POST /api/teacher/problems/` 个人题（homework:bank）、`POST /api/teacher/public-problems/` 公共题（question_bank:manage），请求体 isPublic 一律无效；`GET/PUT/DELETE /api/teacher/problems/<id>/` 不设统一 permCode，由服务层 `getManageableProblem` 对象级判 403（无任何题库权限）/404（无权限或非本人个人题，防探测）
 - **学生题面端点**（12.2）：`GET /api/problems/<id>/`（homework:view），不按 is_public 过滤——作业里引用的教师个人题学生要能读；白名单仅 title/statementMd/samples/languages，不含 tests/spj_code/tier/compareStrategy
 - **编辑语义冻结**（决策 d）：编辑 = 重传完整 md 全文替换（与建题同一条解析校验链），成功后 revision+1；已受理提交用快照判题不受影响（7.3）；解析失败 400 且原题不动（先解析后落库）
+
+### v8（2026-10-18，M7 作业组卷与页面落地修订）
+
+- **新增 12.4 作业组卷 API 规格**（全章节）：端点表、创建校验（题数上限 20、数组序 = 题序、revision 快照冻结）、编辑锁定语义、删除语义、学生三态与开始前 404
+- **题库定位语义定稿**：课程组公共题库面向整个课程（跨教学班复用）、教师题库面向教学班级（自建自用）；选题可见集合 = 公共题 + 本人个人题
+- **锁定决策落地**：已有提交 → 题目列表锁定（只允许改标题/时间）；截止时间只允许向后延长；无提交可删、有提交 400（DB 层 PROTECT 兜底）
+- **学生详情防提前看题**：开始前详情 404，列表仅显示「未开始」徽章（提交层 7.1 的「作业尚未开始」400 保持不变，学生已知道作业存在）
+- **页面实装**（开发预览）：教师题库页（录题/编辑 md 表单 + 课程组公共题入口）、教学班作业 Tab（作业列表 + 组卷选题面板）、学生作业列表（三态徽章）、学生作业详情（题面 markdown 渲染 + 代码提交 + 判题结果 2s 轮询）——全部 fetch 12.x API，服务端校验为唯一防线

@@ -1,4 +1,5 @@
 """教师工作台序列化器（列表项轻量数据；详情复用 academics 的序列化器）"""
+from django.utils import timezone
 from rest_framework import serializers
 
 from academics.models import ClassMembership, TeachingClass
@@ -122,3 +123,111 @@ class ProblemStudentSerializer(serializers.Serializer):
     statementMd = serializers.CharField(source='statement_md', read_only=True)
     samples = serializers.JSONField(read_only=True)
     languages = serializers.JSONField(read_only=True)
+
+
+class HomeworkListSerializer(serializers.Serializer):
+    """教师作业列表项（白名单：不含学生提交明细，统计走聚合字段）"""
+    id = serializers.IntegerField(read_only=True)
+    title = serializers.CharField(read_only=True)
+    teachingClassId = serializers.IntegerField(source='teaching_class_id',
+                                               read_only=True)
+    startAt = serializers.DateTimeField(source='start_at', read_only=True)
+    deadline = serializers.DateTimeField(read_only=True)
+    problemCount = serializers.IntegerField(read_only=True)
+    submissionCount = serializers.IntegerField(read_only=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+
+
+class HomeworkProblemItemSerializer(serializers.Serializer):
+    """教师作业详情内的题目项：题序 + 选题时修订号快照（12.4）
+
+    不含 tests/spj_code（保密链 6.2）；tier/languages 属题目公开配置，
+    教师端可见。problemId 是题目主键（非中间表主键）。
+    """
+    problemId = serializers.IntegerField(source='problem_id', read_only=True)
+    title = serializers.CharField(read_only=True)
+    order = serializers.IntegerField(read_only=True)
+    problemRevision = serializers.IntegerField(source='problem_revision',
+                                               read_only=True)
+    tier = serializers.CharField(read_only=True)
+    languages = serializers.JSONField(read_only=True)
+    hasSpj = serializers.BooleanField(source='has_spj', read_only=True)
+
+
+class HomeworkDetailSerializer(HomeworkListSerializer):
+    """教师作业详情：列表字段 + 题目列表（按题序）"""
+    problems = HomeworkProblemItemSerializer(many=True, read_only=True)
+
+
+class SubmissionBriefSerializer(serializers.Serializer):
+    """学生作业详情内我的提交摘要：终态与分数（不含 code 原文）"""
+    id = serializers.IntegerField(read_only=True)
+    problemId = serializers.IntegerField(source='problem_id', read_only=True)
+    status = serializers.CharField(read_only=True)
+    score = serializers.IntegerField(read_only=True)
+    totalScore = serializers.IntegerField(source='total_score', read_only=True)
+    timeUsed = serializers.IntegerField(source='time_used', read_only=True)
+    memoryUsed = serializers.IntegerField(source='memory_used', read_only=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+
+
+class HomeworkStudentListSerializer(serializers.Serializer):
+    """学生作业列表项：时间 + 题数 + 我的提交概况
+
+    status 由服务端按当前时间派生（未开始/进行中/已截止），
+    前端据此渲染徽章；教师姓名取自发布教师（可能已删号）。
+    """
+    id = serializers.IntegerField(read_only=True)
+    title = serializers.CharField(read_only=True)
+    startAt = serializers.DateTimeField(source='start_at', read_only=True)
+    deadline = serializers.DateTimeField(read_only=True)
+    problemCount = serializers.IntegerField(read_only=True)
+    mySubmitCount = serializers.IntegerField(read_only=True)
+    myBestScore = serializers.IntegerField(read_only=True)
+    status = serializers.SerializerMethodField()
+    teacherName = serializers.SerializerMethodField()
+
+    def get_status(self, obj):
+        """三态派生：未开始 / 进行中 / 已截止"""
+        now = timezone.now()
+        if now < obj.start_at:
+            return 'pending_start'
+        if now <= obj.deadline:
+            return 'ongoing'
+        return 'closed'
+
+    def get_teacherName(self, obj):
+        """发布教师姓名；删号后显示占位（Homework.created_by SET_NULL）"""
+        creator = getattr(obj, 'created_by', None)
+        if creator is None:
+            return '（教师已删除）'
+        return creator.get_full_name() or creator.username
+
+
+class HomeworkStudentDetailSerializer(serializers.Serializer):
+    """学生作业详情：时间 + 题目列表（学生白名单）+ 我的提交摘要
+
+    题目复用 ProblemStudentSerializer 白名单（不含 tests/spj_code）；
+    开始前详情已被服务层 404（防提前看题，12.4）。
+    """
+    id = serializers.IntegerField(read_only=True)
+    title = serializers.CharField(read_only=True)
+    startAt = serializers.DateTimeField(source='start_at', read_only=True)
+    deadline = serializers.DateTimeField(read_only=True)
+    status = serializers.SerializerMethodField()
+    problems = serializers.SerializerMethodField()
+    mySubmissions = SubmissionBriefSerializer(source='my_submissions_cache',
+                                              many=True, read_only=True)
+
+    def get_status(self, obj):
+        now = timezone.now()
+        if now < obj.start_at:
+            return 'pending_start'
+        if now <= obj.deadline:
+            return 'ongoing'
+        return 'closed'
+
+    def get_problems(self, obj):
+        """题目列表按题序输出，复用学生题面白名单"""
+        problems = [item.problem for item in obj.problems.all()]
+        return ProblemStudentSerializer(problems, many=True).data

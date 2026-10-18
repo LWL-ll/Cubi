@@ -17,9 +17,17 @@ from teaching.models import Problem, Submission
 from users.permissions import IsTeacherGroup, PermRequired
 
 from .helpers import getTeacherTeachingClass
+from .homework_service import (createHomework, deleteHomework,
+                               getManageableHomework, getStudentHomework,
+                               listClassHomeworks, listStudentHomeworks,
+                               updateHomework)
 from .problem_service import (createProblem, getManageableProblem,
                               updateProblem)
-from .serializers import (ProblemDetailSerializer, ProblemListSerializer,
+from .serializers import (HomeworkDetailSerializer,
+                          HomeworkListSerializer,
+                          HomeworkStudentDetailSerializer,
+                          HomeworkStudentListSerializer,
+                          ProblemDetailSerializer, ProblemListSerializer,
                           ProblemStudentSerializer,
                           SubmissionDetailSerializer,
                           SubmissionListSerializer,
@@ -175,6 +183,89 @@ class StudentProblemDetailView(APIView):
         if problem is None:
             raise Http404('题目不存在')
         return Response(ProblemStudentSerializer(problem).data)
+
+
+class TeacherHomeworkListCreateView(APIView):
+    """教学班作业列表与组卷：GET/POST /api/teacher/teaching-classes/<id>/homeworks/
+
+    权限码：homework:publish（教师）。
+    对象级：getTeacherTeachingClass 校验是本班教师（否则 404）。
+    GET：该班作业列表（题数 + 提交数聚合，12.4）。
+    POST：创建作业（选题可见集合 = 公共题库 + 本人个人题，
+    problem_revision 冻结选题时修订号）。
+    """
+    permission_classes = [PermRequired]
+    permCode = 'homework:publish'
+
+    def get(self, request, teachingClassId):
+        teachingClass = getTeacherTeachingClass(request.user, teachingClassId)
+        homeworks = listClassHomeworks(request.user, teachingClass)
+        return Response(HomeworkListSerializer(homeworks, many=True).data)
+
+    def post(self, request, teachingClassId):
+        teachingClass = getTeacherTeachingClass(request.user, teachingClassId)
+        homework = createHomework(request.user, teachingClass, request.data)
+        return Response(HomeworkDetailSerializer(homework).data)
+
+
+class TeacherHomeworkDetailView(APIView):
+    """作业详情/编辑/删除：GET/PUT/DELETE /api/teacher/homeworks/<id>/
+
+    权限码：homework:publish；对象级：getManageableHomework
+    （非本班教师 404，防探测）。
+    PUT 全量语义：已有提交锁定题目列表（400），截止时间只允许延长。
+    DELETE：有提交 400，无提交连带中间表删除。
+    """
+    permission_classes = [PermRequired]
+    permCode = 'homework:publish'
+
+    def get(self, request, homeworkId):
+        homework = getManageableHomework(request.user, homeworkId)
+        return Response(HomeworkDetailSerializer(homework).data)
+
+    def put(self, request, homeworkId):
+        homework = getManageableHomework(request.user, homeworkId)
+        homework = updateHomework(request.user, homework, request.data)
+        return Response(HomeworkDetailSerializer(homework).data)
+
+    def delete(self, request, homeworkId):
+        homework = getManageableHomework(request.user, homeworkId)
+        deleteHomework(homework)
+        return Response(status=204)
+
+
+class StudentHomeworkListView(APIView):
+    """我的作业列表：GET /api/homeworks/
+
+    权限码：homework:view。数据 = 我所在教学班的全部作业
+    （3 跳推导），状态三态（未开始/进行中/已截止）+ 我的提交概况
+    由序列化器派生（12.4）。
+    """
+    permission_classes = [PermRequired]
+    permCode = 'homework:view'
+
+    def get(self, request):
+        homeworks = listStudentHomeworks(request.user)
+        return Response(HomeworkStudentListSerializer(homeworks, many=True).data)
+
+
+class StudentHomeworkDetailView(APIView):
+    """学生作业详情：GET /api/homeworks/<id>/
+
+    权限码：homework:view。对象级：属于该作业的教学班（3 跳），
+    否则 404；开始前 404（防提前看题，12.4）。
+    返回题目列表（学生白名单，不含 tests/spj_code）+ 我的提交摘要。
+    """
+    permission_classes = [PermRequired]
+    permCode = 'homework:view'
+
+    def get(self, request, homeworkId):
+        homework = getStudentHomework(request.user, homeworkId)
+        # 我的提交摘要：只取最近 10 条（页面轮询展示用）
+        submissions = homework.submissions.filter(
+            user=request.user).order_by('-created_at')[:10]
+        homework.my_submissions_cache = list(submissions)
+        return Response(HomeworkStudentDetailSerializer(homework).data)
 
 
 class TeacherTeachingClassListView(APIView):

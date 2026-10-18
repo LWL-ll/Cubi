@@ -1,0 +1,207 @@
+{# 教学班「作业」Tab（M7 实装）：作业列表 + 组卷表单
+   数据走 API（homework:publish）：
+   - GET  /api/teacher/teaching-classes/<id>/homeworks/  作业列表
+   - POST /api/teacher/teaching-classes/<id>/homeworks/  创建作业
+   - DELETE /api/teacher/homeworks/<id>/                 删除（有提交 400）
+   - GET  /api/teacher/problems/                         选题面板（公共 + 本人） #}
+
+<div class="card shadow-sm border-0">
+    <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
+        <h6 class="fw-bold mb-0">📝 作业列表</h6>
+        <button class="btn btn-primary btn-sm" onclick="openCreateModal()">＋ 新建作业</button>
+    </div>
+    <div class="card-body">
+        <div id="homeworkList" class="text-center text-secondary py-3">加载中…</div>
+    </div>
+</div>
+
+{# 组卷模态框：标题 + 起止时间 + 选题面板 #}
+<div class="modal fade" id="createModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h6 class="modal-title fw-bold">新建作业</h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3">
+                    <div class="col-12">
+                        <label class="form-label small text-secondary">作业标题</label>
+                        <input type="text" id="hwTitle" class="form-control" maxlength="100"
+                               placeholder="如：第一章 程序设计基础练习">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label small text-secondary">开始时间</label>
+                        <input type="datetime-local" id="hwStartAt" class="form-control">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label small text-secondary">截止时间</label>
+                        <input type="datetime-local" id="hwDeadline" class="form-control">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label small text-secondary">
+                            选题（公共题库 + 我的个人题，最多 20 道；点击勾选，顺序即题序）
+                        </label>
+                        <div id="problemPicker" class="border rounded p-2"
+                             style="max-height: 320px; overflow-y: auto;">
+                            <div class="text-center text-secondary py-2">加载题库中…</div>
+                        </div>
+                        <div class="small text-secondary mt-1">
+                            已选 <span id="selectedCount" class="fw-bold text-primary">0</span> 道
+                        </div>
+                    </div>
+                </div>
+                <div id="createError" class="alert alert-danger py-2 mt-3 mb-0 d-none"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">取消</button>
+                <button class="btn btn-primary btn-sm" onclick="submitHomework()">创建作业</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const TEACHING_CLASS_ID = {{ teachingClass.id }};
+const MAX_PROBLEMS = 20;          // 与后端 12.4 上限一致
+
+// 题库缓存：id -> 题目（选题面板渲染用）
+let problemBank = [];
+let createModalInstance = null;
+
+// HTML 转义：题目标题/作业标题来自用户输入，一律转义防 XSS
+function esc(text) {
+    const div = document.createElement('div');
+    div.textContent = text == null ? '' : String(text);
+    return div.innerHTML;
+}
+
+function formatTime(iso) {
+    // ISO 时间转本地显示（YYYY-MM-DD HH:mm）
+    const date = new Date(iso);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+           `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+async function loadHomeworks() {
+    const res = await fetch(`/api/teacher/teaching-classes/${TEACHING_CLASS_ID}/homeworks/`);
+    if (!res.ok) { document.getElementById('homeworkList').textContent = '加载失败'; return; }
+    const list = await res.json();
+    const container = document.getElementById('homeworkList');
+    if (!list.length) {
+        container.innerHTML = '<div class="text-secondary py-3">暂无作业，点击右上角「新建作业」组卷</div>';
+        return;
+    }
+    container.innerHTML = list.map(hw => `
+        <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
+            <div>
+                <div class="fw-bold">${esc(hw.title)}</div>
+                <div class="small text-secondary">
+                    🕐 ${formatTime(hw.startAt)} ~ ${formatTime(hw.deadline)}
+                    · 📄 ${hw.problemCount} 题
+                    · 📤 ${hw.submissionCount} 次提交
+                </div>
+            </div>
+            <button class="btn btn-outline-danger btn-sm" onclick="deleteHomework(${hw.id})">删除</button>
+        </div>`).join('');
+}
+
+async function deleteHomework(homeworkId) {
+    if (!confirm('确认删除该作业？已有提交的作业无法删除。')) return;
+    const res = await fetch(`/api/teacher/homeworks/${homeworkId}/`, {method: 'DELETE'});
+    if (res.status === 204) { loadHomeworks(); return; }
+    const data = await res.json().catch(() => ({}));
+    alert(data.detail || '删除失败：' + res.status);
+}
+
+async function openCreateModal() {
+    // 打开前重置表单 + 拉取题库
+    document.getElementById('hwTitle').value = '';
+    document.getElementById('hwStartAt').value = '';
+    document.getElementById('hwDeadline').value = '';
+    document.getElementById('createError').classList.add('d-none');
+    renderPicker([]);
+    document.getElementById('selectedCount').textContent = '0';
+    const res = await fetch('/api/teacher/problems/');
+    problemBank = res.ok ? (await res.json()).results : [];
+    renderPicker([]);
+    createModalInstance = new bootstrap.Modal(document.getElementById('createModal'));
+    createModalInstance.show();
+}
+
+function renderPicker(selectedIds) {
+    const picker = document.getElementById('problemPicker');
+    if (!problemBank.length) {
+        picker.innerHTML = '<div class="text-center text-secondary py-2">题库为空，请先到「作业题库」录入题目</div>';
+        return;
+    }
+    picker.innerHTML = problemBank.map(problem => {
+        const checked = selectedIds.includes(problem.id);
+        const publicBadge = problem.isPublic
+            ? '<span class="badge text-bg-info ms-1">公共</span>' : '';
+        return `
+        <div class="form-check text-start py-1 border-bottom">
+            <input class="form-check-input" type="checkbox"
+                   id="pick-${problem.id}" data-id="${problem.id}"
+                   onchange="togglePick(${problem.id})" ${checked ? 'checked' : ''}>
+            <label class="form-check-label small" for="pick-${problem.id}">
+                ${esc(problem.title)}${publicBadge}
+                <span class="text-secondary">· ${esc(problem.tier)} · ${problem.languages.join('/')}</span>
+            </label>
+        </div>`;
+    }).join('');
+}
+
+function getSelectedIds() {
+    // 按题目在题库中的展示顺序收集（顺序即题序）
+    return problemBank.filter(p => document.getElementById('pick-' + p.id)?.checked)
+        .map(p => p.id);
+}
+
+function togglePick() {
+    const selectedIds = getSelectedIds();
+    if (selectedIds.length > MAX_PROBLEMS) {
+        alert(`单份作业最多 ${MAX_PROBLEMS} 道题`);
+        renderPicker(selectedIds.slice(0, MAX_PROBLEMS));
+        return;
+    }
+    document.getElementById('selectedCount').textContent = selectedIds.length;
+}
+
+async function submitHomework() {
+    const errorBox = document.getElementById('createError');
+    errorBox.classList.add('d-none');
+    const title = document.getElementById('hwTitle').value.trim();
+    const startRaw = document.getElementById('hwStartAt').value;
+    const deadlineRaw = document.getElementById('hwDeadline').value;
+    const problemIds = getSelectedIds();
+    if (!title) { errorBox.textContent = '请填写作业标题'; errorBox.classList.remove('d-none'); return; }
+    if (!startRaw || !deadlineRaw) {
+        errorBox.textContent = '请填写开始与截止时间'; errorBox.classList.remove('d-none'); return;
+    }
+    if (!problemIds.length) { errorBox.textContent = '请至少选择一道题'; errorBox.classList.remove('d-none'); return; }
+    // datetime-local 无时区：按浏览器本地时间解析后转 ISO（带时区偏移）
+    const payload = {
+        title: title,
+        startAt: new Date(startRaw).toISOString(),
+        deadline: new Date(deadlineRaw).toISOString(),
+        problemIds: problemIds,
+    };
+    const res = await fetch(`/api/teacher/teaching-classes/${TEACHING_CLASS_ID}/homeworks/`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+    });
+    if (res.ok) {
+        createModalInstance.hide();
+        loadHomeworks();
+        return;
+    }
+    const data = await res.json().catch(() => ({}));
+    errorBox.textContent = data.detail || ('创建失败：' + res.status);
+    errorBox.classList.remove('d-none');
+}
+
+loadHomeworks();
+</script>

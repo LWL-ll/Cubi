@@ -29,7 +29,10 @@
     {% endfor %}
 </ul>
 
-{# 内容区：本轮为骨架占位，各功能按轮次填充 #}
+{# 内容区：作业 Tab 已实装（M7），其余 Tab 保持骨架占位 #}
+{% if currentTab == 'homework' %}
+    {% include 'teaching/homework_tab.html' %}
+{% else %}
 <div class="card shadow-sm border-0">
     <div class="card-body text-center text-secondary py-5">
         <div class="fs-1 mb-2">🚧</div>
@@ -37,4 +40,5 @@
         <p class="mb-0">框架轮已打通入口与教学班校验，该功能将在后续轮次实现</p>
     </div>
 </div>
+{% endif %}
 {% endblock %}

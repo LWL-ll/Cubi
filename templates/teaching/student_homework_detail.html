@@ -6,160 +6,236 @@
 {# 返回列表 #}
 <a href="{% url 'student_homeworks' %}" class="btn btn-outline-secondary btn-sm mb-3">← 返回作业列表</a>
 
-<h4 class="fw-bold mb-3">📝 作业详情</h4>
+{# 作业信息头 #}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="fw-bold mb-0" id="hwTitle">📝 加载中…</h4>
+    <div id="hwBadges"></div>
+</div>
+<div class="small text-secondary mb-3" id="hwMeta"></div>
 
 <div class="row g-3">
-    <div class="col-lg-8">
-        {# 作业信息卡 #}
-        <div class="card border-0 rounded-4 shadow-sm mb-3">
-            <div class="card-body p-4">
-                <div class="d-flex justify-content-between align-items-start">
-                    <div>
-                        <h5 class="fw-bold mb-2" id="hwTitle">——</h5>
-                        <div class="small text-secondary" id="hwMeta">——</div>
-                    </div>
-                    <span class="badge text-bg-success" id="hwDeadlineBadge">截止 2026-10-20 23:59</span>
-                </div>
-                <hr>
-                <div id="hwContent" class="text-secondary">——</div>
-            </div>
-        </div>
+    {# 左列：题目列表（展开答题） #}
+    <div class="col-lg-8" id="problemList"></div>
 
-        {# 教师反馈卡（已批改时显示：评语 + 答案/讲解） #}
-        <div class="card border-0 rounded-4 shadow-sm mb-3 d-none" id="feedbackCard">
-            <div class="card-body p-4">
-                <h6 class="fw-bold mb-3">💬 教师反馈</h6>
-                <div class="mb-3">
-                    <div class="small text-secondary mb-1">教师评语</div>
-                    <div id="hwComment">——</div>
-                </div>
-                <div>
-                    <div class="small text-secondary mb-1">答案 / 讲解</div>
-                    <div id="hwAnswer">——</div>
-                </div>
-            </div>
-        </div>
-    </div>
-
+    {# 右列：我的提交（轮询刷新） #}
     <div class="col-lg-4">
-        {# 我的提交卡：按状态显示三种形态（未提交→表单 / 已提交→展示+修改 / 已截止未交→提示） #}
         <div class="card border-0 rounded-4 shadow-sm">
             <div class="card-body p-4">
                 <h6 class="fw-bold mb-3">📤 我的提交</h6>
-
-                {# 形态一：未提交（截止前）——提交表单 #}
-                <div id="submitForm">
-                    <div class="mb-3">
-                        <label class="form-label small text-secondary">文字作答</label>
-                        <textarea id="answerInput" class="form-control" rows="6"
-                                  placeholder="在这里输入你的作业内容…"></textarea>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label small text-secondary">图片附件（拍照上传，jpg/png，≤5MB）</label>
-                        <input type="file" id="fileInput" class="form-control" accept="image/jpeg,image/png" multiple>
-                        <div class="small text-secondary mt-1">可多选，照片请尽量拍清楚</div>
-                    </div>
-                    <button class="btn btn-primary w-100" onclick="submitHomework()">提交作业</button>
-                </div>
-
-                {# 形态二：已提交（截止前可修改）——展示我的提交 + 修改按钮 #}
-                <div id="submittedView" class="d-none">
-                    <div class="small text-secondary mb-1">我的作答</div>
-                    <div id="myContent" class="mb-2">——</div>
-                    <div id="myAttachment" class="mb-3"></div>
-                    <div class="small text-secondary mb-3" id="submittedAt"></div>
-                    <button class="btn btn-outline-primary btn-sm w-100" onclick="toggleEdit(true)">修改提交</button>
-                </div>
-
-                {# 形态三：已截止未交 #}
-                <div id="missedView" class="d-none text-center py-4">
-                    <div class="fs-1 mb-2">⏰</div>
-                    <div class="fw-bold text-danger">已过截止时间</div>
-                    <div class="small text-secondary mt-1">该作业已截止，未能提交</div>
-                </div>
+                <div id="submissionList" class="text-secondary">加载中…</div>
             </div>
         </div>
     </div>
 </div>
 
+{# markdown 渲染库（题面渲染；CDN 不可用时降级为纯文本展示） #}
+<script src="https://cdn.bootcdn.net/ajax/libs/marked/4.3.0/marked.min.js"></script>
 <script>
-// ============================================================
-// 前端假数据：后端就绪后删除本段，启用 fetch 版数据源
-// 后端接口规划：
-//   GET  /api/student/homeworks/<id>/       作业详情 + 我的提交 + 评语
-//   POST /api/student/homeworks/<id>/submit/  提交（multipart）
-// 注意：页面用 URL 里的作业 id（当前占位，后端轮接入真实数据）
-// ============================================================
 const HOMEWORK_ID = {{ homeworkId }};
 
-// 演示用作业数据（真实数据按 HOMEWORK_ID 从 API 取）
-const MOCK_DETAIL = {
-    title: '第一章 程序设计基础练习',
-    teacherName: '李老师',
-    deadline: '2026-10-20 23:59',
-    content: '1. 用 C 语言实现冒泡排序，并分析时间复杂度。\n2. 简述指针和数组的区别。\n3. 完成教材第 45 页练习题 2、3、5。',
-    status: 'pending',            // pending 未提交 / submitted 已提交 / reviewed 已批改 / missed 已截止未交
-    myContent: '',                // 我的作答（已提交时）
-    myAttachment: null,           // 我的附件（已提交时）
-    submittedAt: '',              // 提交时间
-    comment: '',                  // 教师评语
-    answer: '',                   // 教师答案/讲解
-    score: null,
+// HTML 转义：题面以外的服务端文本一律转义防 XSS
+function esc(text) {
+    const div = document.createElement('div');
+    div.textContent = text == null ? '' : String(text);
+    return div.innerHTML;
+}
+
+function formatTime(iso) {
+    const date = new Date(iso);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+           `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+// 判题状态 -> 展示文案与颜色（与后端 STATUS_CHOICES 对齐）
+const STATUS_LABELS = {
+    queued:             {text: '排队中',   color: 'text-bg-secondary'},
+    running:            {text: '判题中',   color: 'text-bg-info'},
+    accepted:           {text: '通过',     color: 'text-bg-success'},
+    wrong_answer:       {text: '答案错误', color: 'text-bg-danger'},
+    compile_error:      {text: '编译错误', color: 'text-bg-warning'},
+    time_limit_exceeded:{text: '超时',     color: 'text-bg-danger'},
+    memory_limit_exceeded: {text: '内存超限', color: 'text-bg-danger'},
+    output_limit_exceeded: {text: '输出超限', color: 'text-bg-danger'},
+    runtime_error:      {text: '运行错误', color: 'text-bg-danger'},
+    repeat:             {text: '重复提交', color: 'text-bg-secondary'},
+    system_error:       {text: '系统错误', color: 'text-bg-dark'},
+};
+// 终态集合（轮询停止条件）
+const TERMINAL = new Set(['accepted', 'wrong_answer', 'compile_error',
+    'time_limit_exceeded', 'memory_limit_exceeded', 'output_limit_exceeded',
+    'runtime_error', 'repeat', 'system_error']);
+
+let homeworkDetail = null;
+let pollTimer = null;
+
+function statusBadge(status) {
+    const item = STATUS_LABELS[status] || {text: status, color: 'text-bg-light'};
+    return `<span class="badge ${item.color}">${item.text}</span>`;
+}
+
+function renderMarkdown(mdText) {
+    // marked 可用时渲染为 HTML；CDN 失败降级纯文本（不信任浏览器渲染裸 HTML）
+    if (window.marked) {
+        return window.marked.parse(mdText);
+    }
+    return `<pre class="text-wrap small mb-0">${esc(mdText)}</pre>`;
+}
+
+async function loadDetail() {
+    const res = await fetch(`/api/homeworks/${HOMEWORK_ID}/`);
+    if (!res.ok) {
+        document.getElementById('hwTitle').textContent = '作业不存在或尚未开始';
+        document.getElementById('problemList').innerHTML = '';
+        document.getElementById('submissionList').textContent = '';
+        return;
+    }
+    homeworkDetail = await res.json();
+    renderHeader();
+    renderProblems();
+    renderSubmissions();
+    schedulePoll();
+}
+
+// 作业三态徽章（与列表页一致）
+const HW_STATUS_BADGES = {
+    pending_start: {text: '未开始', color: 'text-bg-secondary'},
+    ongoing:       {text: '进行中', color: 'text-bg-success'},
+    closed:        {text: '已截止', color: 'text-bg-danger'},
 };
 
-// 后端就绪后启用（替换假数据 + 渲染调用）：
-// async function loadDetail() {
-//     const res = await fetch('/api/student/homeworks/' + HOMEWORK_ID + '/');
-//     renderDetail(await res.json());
-// }
+function renderHeader() {
+    const hw = homeworkDetail;
+    document.getElementById('hwTitle').textContent = '📝 ' + hw.title;
+    document.getElementById('hwMeta').textContent =
+        `🕐 ${formatTime(hw.startAt)} ~ ${formatTime(hw.deadline)} · ${hw.problems.length} 道题`;
+    const badge = HW_STATUS_BADGES[hw.status] || HW_STATUS_BADGES.ongoing;
+    document.getElementById('hwBadges').innerHTML =
+        `<span class="badge ${badge.color}">${badge.text}</span>`;
+}
 
-// 渲染页面：按提交状态切换三个形态 + 填充作业信息
-function renderDetail(hw) {
-    document.getElementById('hwTitle').textContent = hw.title;
-    document.getElementById('hwMeta').textContent = hw.teacherName + ' 发布';
-    document.getElementById('hwDeadlineBadge').textContent = '截止 ' + hw.deadline;
-    document.getElementById('hwContent').textContent = hw.content;
-
-    // 教师反馈区（已批改且有评语/答案时显示）
-    const feedbackCard = document.getElementById('feedbackCard');
-    if (hw.status === 'reviewed' && (hw.comment || hw.answer)) {
-        feedbackCard.classList.remove('d-none');
-        document.getElementById('hwComment').textContent = hw.comment || '——';
-        document.getElementById('hwAnswer').textContent = hw.answer || '——';
+function renderProblems() {
+    const container = document.getElementById('problemList');
+    const closed = homeworkDetail.status === 'closed';
+    if (!homeworkDetail.problems.length) {
+        container.innerHTML = '<div class="text-secondary">该作业暂无题目</div>';
+        return;
     }
+    container.innerHTML = homeworkDetail.problems.map((problem, index) => {
+        // 语言选项：只显示题目允许的语言
+        const languageOptions = problem.languages.map(lang =>
+            `<option value="${esc(lang)}">${lang === 'c' ? 'C' : 'Python'}</option>`).join('');
+        // 样例展示：输入/输出对照
+        const sampleBlocks = (problem.samples || []).map(sample => `
+            <div class="row g-2 mb-2">
+                <div class="col-md-6">
+                    <div class="small text-secondary">输入</div>
+                    <pre class="border rounded p-2 small bg-light mb-0">${esc(sample.input)}</pre>
+                </div>
+                <div class="col-md-6">
+                    <div class="small text-secondary">输出</div>
+                    <pre class="border rounded p-2 small bg-light mb-0">${esc(sample.output)}</pre>
+                </div>
+            </div>`).join('');
+        return `
+        <div class="card border-0 rounded-4 shadow-sm mb-3">
+            <div class="card-body p-4">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="fw-bold mb-0">${index + 1}. ${esc(problem.title)}</h6>
+                </div>
+                <div class="problem-statement small">${renderMarkdown(problem.statementMd)}</div>
+                ${sampleBlocks ? `<hr><div class="small fw-bold text-secondary mb-2">样例</div>${sampleBlocks}` : ''}
+                <hr>
+                <div class="small fw-bold text-secondary mb-2">作答</div>
+                <div class="row g-2 mb-2">
+                    <div class="col-md-4">
+                        <select class="form-select form-select-sm" id="lang-${problem.id}">
+                            ${languageOptions}
+                        </select>
+                    </div>
+                </div>
+                <textarea class="form-control font-monospace" rows="8" id="code-${problem.id}"
+                          placeholder="在这里粘贴你的代码…"></textarea>
+                <div id="error-${problem.id}" class="alert alert-danger py-2 mt-2 mb-0 small d-none"></div>
+                ${closed ? '<div class="small text-danger mt-2">作业已截止，无法提交</div>' : ''}
+                <button class="btn btn-primary btn-sm mt-2" ${closed ? 'disabled' : ''}
+                        onclick="submitCode(${problem.id})">提交代码</button>
+            </div>
+        </div>`;
+    }).join('');
+}
 
-    // 三个形态只显示一个（已提交和已批改都展示我的提交内容）
-    const isSubmitted = hw.status === 'submitted' || hw.status === 'reviewed';
-    document.getElementById('submitForm').classList.toggle('d-none', isSubmitted);
-    document.getElementById('missedView').classList.toggle('d-none', hw.status !== 'missed');
-    document.getElementById('submittedView').classList.toggle('d-none', !isSubmitted);
-    if (isSubmitted) {
-        document.getElementById('myContent').textContent = hw.myContent || '（未填写文字作答）';
-        document.getElementById('myAttachment').innerHTML = hw.myAttachment
-            ? `<span class="badge text-bg-light border">📎 ${hw.myAttachment}</span>` : '';
-        document.getElementById('submittedAt').textContent = '提交于 ' + hw.submittedAt;
+function renderSubmissions() {
+    const container = document.getElementById('submissionList');
+    const submissions = homeworkDetail.mySubmissions || [];
+    if (!submissions.length) {
+        container.innerHTML = '<div class="text-secondary py-2">还没有提交记录</div>';
+        return;
+    }
+    // problemId -> 题目标题映射（展示用）
+    const titleById = {};
+    (homeworkDetail.problems || []).forEach(p => { titleById[p.id] = p.title; });
+    container.innerHTML = submissions.map(s => {
+        const scoreHtml = TERMINAL.has(s.status)
+            ? `<span class="small text-secondary ms-2">${s.score} / ${s.totalScore} 分</span>` : '';
+        return `
+        <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
+            <div>
+                <div class="small fw-bold">${esc(titleById[s.problemId] || '题目')}</div>
+                <div class="small text-secondary">${formatTime(s.createdAt)}</div>
+            </div>
+            <div class="text-end">
+                ${statusBadge(s.status)}${scoreHtml}
+            </div>
+        </div>`;
+    }).join('');
+}
+
+// 存在未终态提交时每 2 秒轮询刷新（判题进度展示）
+function schedulePoll() {
+    clearTimeout(pollTimer);
+    const hasPending = (homeworkDetail.mySubmissions || [])
+        .some(s => !TERMINAL.has(s.status));
+    if (hasPending) {
+        pollTimer = setTimeout(loadDetail, 2000);
     }
 }
 
-// 提交按钮（前端校验先行；后端就绪后改为 fetch POST multipart 到 /submit/）
-function submitHomework() {
-    const content = document.getElementById('answerInput').value.trim();
-    if (!content) { alert('请先填写作业内容'); return; }
-    // TODO 后端就绪后：
-    //   const formData = new FormData();
-    //   formData.append('content', content);
-    //   document.getElementById('fileInput').files 逐张 append('attachment', f)
-    //   fetch POST → 成功后 renderDetail 刷新为 submitted 状态
-    alert('提交接口后端就绪后接入（本轮为页面预览）');
+async function submitCode(problemId) {
+    const errorBox = document.getElementById('error-' + problemId);
+    errorBox.classList.add('d-none');
+    const code = document.getElementById('code-' + problemId).value;
+    const language = document.getElementById('lang-' + problemId).value;
+    if (!code.trim()) { errorBox.textContent = '请先输入代码'; errorBox.classList.remove('d-none'); return; }
+    const res = await fetch('/api/submissions/', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            problemId: problemId,
+            submitType: 'homework',
+            homeworkId: HOMEWORK_ID,
+            language: language,
+            code: code,
+        }),
+    });
+    if (res.ok) { loadDetail(); return; }
+    const data = await res.json().catch(() => ({}));
+    const detail = Array.isArray(data.detail) ? data.detail.join('；') : data.detail;
+    errorBox.textContent = detail || ('提交失败：' + res.status);
+    errorBox.classList.remove('d-none');
 }
 
-// 修改提交：切回表单形态并回填已有内容
-function toggleEdit(show) {
-    document.getElementById('submittedView').classList.toggle('d-none', show);
-    document.getElementById('submitForm').classList.toggle('d-none', !show);
-}
-
-// 首屏渲染（后端就绪后改为 loadDetail()）
-renderDetail(MOCK_DETAIL);
+loadDetail();
 </script>
+
+<style>
+    /* 题面渲染样式：markdown 输出的代码块/列表保持可读 */
+    .problem-statement pre {
+        background: #f8f9fa; border: 1px solid #e9ecef;
+        border-radius: 0.375rem; padding: 0.6rem 0.75rem;
+        white-space: pre-wrap; word-break: break-all;
+    }
+    .problem-statement code { color: #d63384; }
+    .problem-statement pre code { color: inherit; }
+</style>
 {% endblock %}
