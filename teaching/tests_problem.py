@@ -46,7 +46,9 @@ class ProblemMarkdownTests(TestCase):
             tests=[('1 2', '3', ' points=60'), ('10 20', '30', ' points=40')]))
         self.assertEqual(parsed['title'], '两数之和')
         self.assertIn('给定两个整数', parsed['statement_md'])
-        self.assertEqual(parsed['samples'], [{'input': '1 2', 'output': '3'}])
+        # 数据围栏按文件语义保留末尾换行（与程序 stdout 行尾逐字节一致）
+        self.assertEqual(parsed['samples'],
+                         [{'input': '1 2\n', 'output': '3\n'}])
         self.assertEqual(parsed['tests'][0]['points'], 60)
         self.assertEqual(parsed['tests'][1]['points'], 40)
         self.assertFalse(parsed['has_spj'])

@@ -17,6 +17,12 @@ PROTECTED_TAGS = frozenset([
     'input-sample', 'output-sample', 'input', 'output', 'spj-python',
 ])
 
+# 数据围栏标签：内容按「文件语义」保留末尾换行。
+# md 里数据围栏的最后一个换行属于文件内容的一部分（与程序 stdout 的
+# 行尾逐字节一致），exact 比对时若丢失会导致「输出正确却 WA」；
+# spj-python 是代码块而非数据文件，不在其列。
+DATA_TAGS = frozenset(['input-sample', 'output-sample', 'input', 'output'])
+
 MAX_TEST_GROUPS = 20             # 隐藏测试点上限（第十章）
 MAX_GROUP_BYTES = 256 * 1024     # 单组 input+output 上限 256KB（第十章）
 TOTAL_POINTS = 100               # 未标注分值测试点平分的总分（第十章）
@@ -55,7 +61,12 @@ def extractBlocks(mdText):
         if index >= len(lines):
             raise ValidationError('代码块未闭合：缺少结尾 ```')
         if tag in PROTECTED_TAGS:
-            protectedBlocks.append((tag, info, '\n'.join(contentLines)))
+            content = '\n'.join(contentLines)
+            # 数据围栏补回内容末尾换行：splitlines 丢掉了最后一个换行符，
+            # 而它属于文件内容（见 DATA_TAGS 注释）；空块不补
+            if contentLines and tag in DATA_TAGS:
+                content += '\n'
+            protectedBlocks.append((tag, info, content))
         else:
             # 普通代码块（如题面里的示例代码）原样放回正文
             bodyLines.extend(lines[blockStart:index + 1])
