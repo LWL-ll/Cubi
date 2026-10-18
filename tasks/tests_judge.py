@@ -24,9 +24,15 @@ from .tasks_judge import (JudgeTransientError, aggregatePoints, claimLease,
                           sanitizeOutput)
 
 
-def acceptedResult(stdout, exitStatus=0, timeUsed=0.01, memory=1_048_576):
-    """构造 go-judge Accepted 响应（与 cmd 一一对应的 Result 条目）"""
-    return {'status': 'Accepted', 'exitStatus': exitStatus,
+def acceptedResult(stdout, exitStatus=0, timeUsed=0.01, memory=1_048_576,
+                   status='Accepted'):
+    """构造 go-judge 响应（与 cmd 一一对应的 Result 条目）
+
+    status 默认 Accepted；部分分协议场景需传 status='Nonzero Exit Status'
+    （go-judge 对 exit≠0 的程序必然报该状态，Accepted+exitStatus≠0 的组合
+    现实中不会出现——验收 4.2 实测教训）。
+    """
+    return {'status': status, 'exitStatus': exitStatus,
             'files': {'stdout': stdout, 'stderr': ''},
             'time': timeUsed, 'memory': memory}
 
@@ -369,16 +375,20 @@ class JudgeTaskTests(TestCase):
         self.assertEqual(self.mockRun.call_count, 7)  # 编译 + 3×(用户+checker)
 
     def test_spjPartialScore(self):
-        """spj 部分分：exitStatus≠0 时 stdout 首行整数为得分；非法输出 0 分"""
+        """spj 部分分：exitStatus≠0（Nonzero Exit Status）时 stdout 首行
+        整数为得分；非法输出 0 分；checker 非零退出不按故障处理"""
         spjSnapshot = dict(self.snapshot, spj_code='spj')
         submission = self.makeSubmission(judge_snapshot=spjSnapshot)
         self.mockRun.side_effect = [
             [compileOkResult()],
             [acceptedResult('3')],
-            [acceptedResult('15', exitStatus=1)],    # 15 ∈ [0,40) → 得 15 分
+            # 真实形态：go-judge 对 exit≠0 报 Nonzero Exit Status（协议信号）
+            [acceptedResult('15', exitStatus=1,
+                            status='Nonzero Exit Status')],   # 15 ∈ [0,40) → 15 分
             [acceptedResult('5')], [acceptedResult('', exitStatus=0)],
             [acceptedResult('7')],
-            [acceptedResult('abc', exitStatus=1)],   # 首行非整数 → 0 分
+            [acceptedResult('abc', exitStatus=1,
+                            status='Nonzero Exit Status')],   # 首行非整数 → 0 分
         ]
         runJudgeTask(submission.pk)
         submission.refresh_from_db()

@@ -334,6 +334,17 @@ def buildStatusDetail(testIndex, status, result):
     return detail
 
 
+# checker 正常执行状态（第十一章部分分协议）：
+# - Accepted：exitStatus=0 → 该点满分
+# - Nonzero Exit Status：exitStatus≠0 → stdout 首行整数 = 部分分（协议信号，
+#   不是故障；go-judge 对 exit≠0 的程序必然报此状态）
+# 其余状态（TLE/MLE/OLE/Signalled/Dangerous Syscall/File Error/Internal Error）
+# 才是 checker 故障：重试 1 次仍失败 → SpjFailedError（≠ 用户 WA）。
+# 实测教训：v6 曾写「非 Accepted 一律按故障」，把部分分协议的 exit≠0
+# 误杀成 system_error（验收 4.2 抓到，见 OJ对接设计.md v9 修订记录）。
+SPJ_NORMAL_STATUSES = frozenset(['Accepted', 'Nonzero Exit Status'])
+
+
 def interpretSpjScore(result, points):
     """spj 分数协议（第十一章）：exitStatus=0 → 满分；
     exitStatus≠0 → stdout 首行 strip 后若是 [0,points) 整数 → 该分；否则 0"""
@@ -353,13 +364,14 @@ def interpretSpjScore(result, points):
 
 def runSpj(submission, test, userOutput):
     """跑 spj（第十一章）：checker 沙箱故障重试 1 次，仍失败 → SpjFailedError
-    （checker 失败 ≠ 用户 WA）；正常返回分数协议解释后的得分"""
+    （checker 失败 ≠ 用户 WA）；正常执行（Accepted/Nonzero Exit Status）
+    返回分数协议解释后的得分"""
     spjCode = submission.judge_snapshot.get('spj_code', '')
     points = test.get('points', 0)
     for attempt in range(2):
         result = callJudge(judge.submitRun,
                            buildSpjRequest(spjCode, test, userOutput))[0]
-        if result['status'] == 'Accepted':
+        if result['status'] in SPJ_NORMAL_STATUSES:
             return interpretSpjScore(result, points)
         if attempt == 0:
             logger.warning('提交 %s checker 沙箱故障（%s），重试 1 次',
