@@ -9,7 +9,7 @@
 
 | 项 | 值 |
 |---|---|
-| 实例 | `https://oj.liuwenli.cn`（go-judge v1.13.3，云实例，不改动） |
+| 实例 | `https://oj.liuwenli.cn`（go-judge v1.13.3，阿里云 ECS + Docker 官方镜像 `criyle/go-judge`，Debian 13 底，2026-10-18 实测） |
 | 认证 | `Authorization: Bearer <OJ_AUTH_TOKEN>` |
 | 凭证注入 | **只从环境变量 `OJ_AUTH_TOKEN` 读取**（settings.py 已配置），严禁硬编码进仓库；泄露后立即轮换 |
 | HTTP 超时 | 30s（`OJ_RUN_TIMEOUT`，大于单题最大 clockLimit 10s + 网络余量） |
@@ -20,17 +20,24 @@
 
 | 实测项 | 结论 |
 |---|---|
-| cgroup 启用（验收红线） | 【待实测回填：PASS/FAIL + enable/file】 |
-| gcc 版本 | 【待实测回填】 |
-| python3 版本 | 【待实测回填】 |
-| python3 标准库抽样 | 【待实测回填：json/re/math/sys/os 是否可用】 |
-| gcc 绝对路径 | 【待实测回填】 |
-| python3 绝对路径 | 【待实测回填】 |
-| 内存限制强制生效 | 【待实测回填：64MB 档必须 Memory Limit Exceeded】 |
+| cgroup 资源强制（验收红线） | ✅ PASS：runnerConfig.cgroupControllers 含 memory+cpu、cgroupType=1、seccomp=true（新版不再暴露顶层 cgroup 键） |
+| 沙箱版本 | v1.13.3 / go1.27.2 / linux-amd64（GET /version） |
+| gcc 版本 | gcc (Debian 14.2.0-19) 14.2.0 |
+| python3 版本 | Python 3.13.5 |
+| python3 标准库抽样 | ✅ json/re/math/sys/os 可用（STDLIB_OK (3, 13)） |
+| gcc 绝对路径 | /usr/bin/gcc |
+| python3 绝对路径 | /usr/bin/python3 |
+| 内存限制强制生效 | ✅ 64MB 档 → Memory Limit Exceeded（cgroup 强制生效） |
 
 **已冻结编译命令**（M5，勿改）：`gcc main.c -o main -O2 -std=c11 -lm`
 （对应判题请求 `copyOutCached: ["main"]` + `args: ["./main"]`；
 Python 直接 `python3 main.py` 内联，无编译步）
+
+**API 形态**（v1.13.3 新版，2026-10-18 实测，teaching/judge.py 已对齐）：
+- `POST /run` 请求体为 Request 对象 `{"cmd": [...]}`（裸数组被 400 拒：
+  cannot unmarshal array into model.Request）
+- `POST /file` 响应为纯 JSON 字符串 fileId（如 `"ZSGDNRTD"`），非 dict
+- 沙箱内 /usr、/bin 等只读直挂容器内部文件系统；工作目录 /w 为 tmpfs（128m）
 
 ## 三、资源限制（服务端每请求显式携带，不依赖沙箱默认值）
 
@@ -53,6 +60,10 @@ Python 直接 `python3 main.py` 内联，无编译步）
    队列闸（用户未终态 JudgeTask ≤ 3）+ long 集群 workers 数控制（6.1 裁定 2）
 4. **总量压测**：单请求实际内存 ≈ 程序 memoryLimit + copyOut + 并发缓存文件，
    需按 `-parallelism` × q2 workers × 用户上限联合压测后固化部署参数（13 章待办）
+5. **镜像必须含语言工具**：gcc 与 python3 必须安装在 go-judge 容器内
+   （沙箱只读直挂容器内部 /usr；官方镜像 Debian 底不自带编译器，
+   实测 execve: executable file not found in $PATH）。
+   安装后必须 `docker commit` 固化镜像——容器重建会丢失安装（2026-10-18 踩坑）
 
 ## 五、Django 侧部署步骤
 

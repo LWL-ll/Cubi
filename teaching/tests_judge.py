@@ -193,15 +193,20 @@ class JudgeClientTests(SimpleTestCase):
     # ---------- uploadFile ----------
 
     def test_uploadFileReturnsFileId(self):
-        """上传成功：旧版 {"fileId"} 键名返回 fileId"""
+        """上传成功：dict 形态 {"fileId"} 键名返回 fileId（兼容分支）"""
         self.mockUrlopen.return_value = FakeResponse(body=b'{"fileId": "7MEHVO76"}')
         self.assertEqual(judge.uploadFile(b'hello'), '7MEHVO76')
 
     def test_uploadFileAcceptsIdsFormat(self):
-        """兼容新版 {"ids": {"file"}} 键名"""
+        """兼容 dict 形态 {"ids": {"file"}} 键名"""
         self.mockUrlopen.return_value = FakeResponse(
             body=b'{"ids": {"file": "7MEHVO76"}}')
         self.assertEqual(judge.uploadFile(b'hello'), '7MEHVO76')
+
+    def test_uploadFileAcceptsStringForm(self):
+        """实测形态（v1.13.3）：响应是纯 JSON 字符串 fileId"""
+        self.mockUrlopen.return_value = FakeResponse(body=b'"ZSGDNRTD"')
+        self.assertEqual(judge.uploadFile(b'hello'), 'ZSGDNRTD')
 
     def test_uploadFileMissingFileIdRaisesSandboxError(self):
         """响应缺少 fileId → 抛 SandboxError"""

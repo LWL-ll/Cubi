@@ -1,8 +1,10 @@
 """go-judge 判题沙箱客户端：HTTP 封装 + 状态集中映射
 
-对接 go-judge v1.13.3（docs/OJ对接设计.md 第三章端点清单）：
-- submitRun：POST /run 判题（一次请求同步跑完，返回 Result 数组）
-- uploadFile：POST /file 上传文件（multipart，字段名 file），返回 fileId
+对接 go-judge v1.13.3 新版 API（docs/OJ对接设计.md 第三/四章，2026-10-18 实测）：
+- submitRun：POST /run 判题，请求体为 Request 对象 {"cmd": [...]}（4.1），
+  一次请求同步跑完，返回 Result 数组（4.2）
+- uploadFile：POST /file 上传文件（multipart，字段名 file），
+  响应为纯 JSON 字符串 fileId（实测形态，如 "ZSGDNRTD"）
 - deleteFile：DELETE /file/<fileId> 删除文件（释放沙箱磁盘）
 
 重试策略（docs/OJ对接设计.md 第十五章）：
@@ -146,11 +148,13 @@ def _doRequest(method, path, body=None, contentType=None):
 def submitRun(runRequest):
     """提交判题：POST /run，返回 Result 数组（与 cmd 一一对应）
 
-    runRequest 为 go-judge cmd 数组（由任务构建器拼装）。
+    runRequest 为 go-judge cmd 数组（由任务构建器拼装），此处按新版 API
+    包成 {"cmd": [...]} Request 对象（文档 4.1；裸数组形态实测被 400 拒：
+    cannot unmarshal array into model.Request）。
     - 沙箱 Internal Error：整体重试 1 次（重跑是全新的沙箱进程，可自愈）
     - 响应结构校验：status 必须属于 9 种原始字面量（安全设计第 4 条）
     """
-    body = json.dumps(runRequest).encode('utf-8')
+    body = json.dumps({'cmd': runRequest}).encode('utf-8')
     for attempt in range(2):
         statusCode, rawBody = _doRequest(
             'POST', '/run', body, 'application/json')
@@ -215,8 +219,12 @@ def uploadFile(fileContent):
         response = json.loads(rawBody)
     except json.JSONDecodeError:
         raise SandboxError('文件上传响应不是合法 JSON')
-    # 兼容 go-judge 两种响应键名：{"fileId"}（旧版）与 {"ids": {"file"}}（新版）
-    fileId = response.get('fileId') or response.get('ids', {}).get('file')
+    # 实测形态（v1.13.3）：响应是纯 JSON 字符串 fileId（如 "ZSGDNRTD"）；
+    # dict 形态保留兜底：{"fileId"} / {"ids": {"file"}}
+    if isinstance(response, str):
+        fileId = response
+    else:
+        fileId = response.get('fileId') or response.get('ids', {}).get('file')
     if not fileId:
         raise SandboxError(f'文件上传响应缺少 fileId：{response!r}')
     return fileId

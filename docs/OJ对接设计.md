@@ -37,6 +37,8 @@
 | 文件上传 | `POST /file`（multipart `file` 字段） | 返回 fileId `"7MEHVO76"` |
 | 文件引用判题 | copyIn 用 PreparedFile | `Accepted`，正确读到文件内容 |
 | 文件下载/删除 | `GET/DELETE /file/<fileId>` | 200 / 200 |
+| gcc 编译链 | `POST /run`：gcc 14.2.0 编译 + `./main` 运行 | ✅ 全绿（镜像原缺 gcc/python3，容器内 apt 安装后复测通过） |
+| python3 运行链 | `POST /run`：python3 3.13.5 + 标准库抽样 | ✅ 全绿 |
 
 ## 三、端点清单与认证
 
