@@ -5,15 +5,84 @@
 - 详情接口先过 getTeacherTeachingClass 对象级校验，非本班教师一律 404
 - 后续功能接口（通知/作业等）都必须沿用这套校验
 """
+from django.http import Http404
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
 from academics.models import TeachingClass
 from academics.serializers import TeachingClassSerializer
-from users.permissions import IsTeacherGroup
+from teaching.models import Submission
+from users.permissions import IsTeacherGroup, PermRequired
 
 from .helpers import getTeacherTeachingClass
-from .serializers import TeacherTeachingClassSerializer
+from .serializers import (SubmissionDetailSerializer,
+                          SubmissionListSerializer,
+                          TeacherTeachingClassSerializer)
+from .submission_service import submitSolution
+
+
+class SubmissionPagination(PageNumberPagination):
+    """提交列表分页：固定每页 20，按 created_at 倒序（12.2 约定）"""
+    page_size = 20
+
+
+class SubmissionListCreateView(APIView):
+    """提交受理与我的提交列表：POST/GET /api/submissions/
+
+    POST：受理提交（九项同步校验 + 快照冻结 + on_commit 投递，
+    逻辑见 teaching/submission_service.py，docs/OJ对接设计.md 第七章）。
+    GET：当前用户的提交列表（超管可见全部），分页 20/页，
+    支持 problem/homework/status 过滤。
+    权限码：homework:view（学生；教师无此码，403）。
+    """
+    permission_classes = [PermRequired]
+    permCode = 'homework:view'
+
+    def post(self, request):
+        # 身份一律取自认证上下文（request.user），请求体 userId 被忽略（7.1）
+        submissionId = submitSolution(request.user, request.data)
+        return Response({'submissionId': submissionId})
+
+    def get(self, request):
+        queryset = Submission.objects.select_related(
+            'problem', 'judge_task')
+        if not request.user.is_superuser:
+            queryset = queryset.filter(user=request.user)
+        # 可选过滤：按题/作业/状态（12.2「按题/作业过滤分页」）
+        problemId = request.query_params.get('problem')
+        homeworkId = request.query_params.get('homework')
+        status = request.query_params.get('status')
+        if problemId:
+            queryset = queryset.filter(problem_id=problemId)
+        if homeworkId:
+            queryset = queryset.filter(homework_id=homeworkId)
+        if status:
+            queryset = queryset.filter(status=status)
+        paginator = SubmissionPagination()
+        page = paginator.paginate_queryset(queryset, request)
+        serializer = SubmissionListSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class SubmissionDetailView(APIView):
+    """提交详情：GET /api/submissions/<id>/
+
+    对象级校验：仅本人（超管放行），否则 404（防探测，12.2）。
+    返回含 code 原文与判题进度；不含测试点数据/预期输出/spj 输出。
+    权限码：homework:view。
+    """
+    permission_classes = [PermRequired]
+    permCode = 'homework:view'
+
+    def get(self, request, submissionId):
+        submission = Submission.objects.select_related(
+            'problem', 'judge_task').filter(pk=submissionId).first()
+        if submission is None or not (
+                request.user.is_superuser
+                or submission.user_id == request.user.id):
+            raise Http404('提交不存在')
+        return Response(SubmissionDetailSerializer(submission).data)
 
 
 class TeacherTeachingClassListView(APIView):
