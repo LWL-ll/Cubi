@@ -5,9 +5,11 @@ from . import views
 
 urlpatterns = [
     # 我的教学班级列表
-    path('', views.renderTeacherClazzList, name='teacher_clazz_list'),
-    # 班级详情（Tab：通知/学情分析/班级资料/作业/批改与AI）
-    path('clazzes/<int:clazzId>/', views.renderTeacherClazzDetail, name='teacher_clazz_detail'),
+    path('', views.renderTeacherTeachingClassList, name='teacher_teaching_class_list'),
+    # 教学班详情（Tab：通知/学情分析/班级资料/作业/批改与AI）
+    path('teaching-classes/<int:teachingClassId>/',
+         views.renderTeacherTeachingClassDetail,
+         name='teacher_teaching_class_detail'),
     # 教师个人题库（占位，后续轮次实现）
     path('question-bank/', views.renderTeacherQuestionBank, name='teacher_question_bank'),
 ]

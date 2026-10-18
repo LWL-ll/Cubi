@@ -1,20 +1,26 @@
 """教务业务 API 路由（挂在 /api/ 前缀下）"""
 from django.urls import path
 
-from .api import (ClazzDetailView, ClazzListView, CollegeListView,
-                  CourseCollegeView, CourseDetailView, CourseListView, ImportView)
+from .api import (AdminClassDetailView, AdminClassListView,
+                  CourseCollegeView, CourseDetailView, CourseListView,
+                  DepartmentListView, ImportView, TeachingClassDetailView,
+                  TeachingClassListView)
 
 urlpatterns = [
     # 学院
-    path('colleges/', CollegeListView.as_view()),
+    path('departments/', DepartmentListView.as_view()),
     # 课程
     path('courses/', CourseListView.as_view()),
     path('courses/<int:courseId>/', CourseDetailView.as_view()),
-    # 课程×学院（组长、教师池、班级设置）
-    path('courses/<int:courseId>/colleges/<int:collegeId>/', CourseCollegeView.as_view()),
-    # 班级
-    path('classes/', ClazzListView.as_view()),
-    path('classes/<int:clazzId>/', ClazzDetailView.as_view()),
+    # 课程×学院（组长、教师池、行政班设置）
+    path('courses/<int:courseId>/departments/<int:departmentId>/',
+         CourseCollegeView.as_view()),
+    # 行政班
+    path('admin-classes/', AdminClassListView.as_view()),
+    path('admin-classes/<int:adminClassId>/', AdminClassDetailView.as_view()),
+    # 教学班（组班、教师分配、解散）
+    path('teaching-classes/', TeachingClassListView.as_view()),
+    path('teaching-classes/<int:teachingClassId>/', TeachingClassDetailView.as_view()),
     # 批量导入（xlsx）
     path('import/', ImportView.as_view()),
 ]

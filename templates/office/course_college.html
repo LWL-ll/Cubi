@@ -1,6 +1,6 @@
 {% extends 'office/base_office.html' %}
 
-{% block title %}{{ course.name }} · {{ college.name }} - 课程设置{% endblock %}
+{% block title %}{{ course.name }} · {{ department.name }} - 课程设置{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -8,7 +8,7 @@
         <h4 class="fw-bold mb-1">
             {{ course.name }} <span class="badge text-bg-info fs-6">{{ course.code }}</span>
             <span class="text-secondary">·</span>
-            {{ college.name }}
+            {{ department.name }}
         </h4>
         <a href="{% url 'office_course_detail' course.id %}" class="small text-decoration-none">← 返回课程设置</a>
     </div>
@@ -86,16 +86,16 @@
                 {% endfor %}
             </div>
             <div class="card-footer text-secondary small">
-                💡 导入的教师自动分配到本课程已关联的每个班级。
+                💡 导入的教师自动加入本课程已组建的教学班。
             </div>
         </div>
     </div>
 
-    {# ③ 专业班级 #}
+    {# ③ 行政班 #}
     <div class="col-lg-4">
         <div class="card shadow-sm h-100">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <span class="fw-bold">🏫 专业班级（{{ clazzes|length }}）</span>
+                <span class="fw-bold">🏫 行政班（{{ adminClasses|length }}）</span>
                 <button class="btn btn-sm btn-primary" data-bs-toggle="collapse" data-bs-target="#importStudentForm">📥 批量导入</button>
             </div>
             <div class="collapse" id="importStudentForm">
@@ -114,19 +114,19 @@
                 </div>
             </div>
             <div class="card-body" style="max-height: 320px; overflow-y: auto;">
-                {% for clazz in clazzes %}
+                {% for adminClass in adminClasses %}
                 <div class="d-flex justify-content-between align-items-center border rounded-3 px-3 py-2 mb-2">
                     <div>
-                        <a href="{% url 'office_class_detail' course.id college.id clazz.id %}" class="fw-bold text-decoration-none">{{ clazz.name }}</a>
+                        <a href="{% url 'office_class_detail' course.id department.id adminClass.id %}" class="fw-bold text-decoration-none">{{ adminClass.name }}</a>
                         <span class="text-secondary small ms-2">
-                            学生 {{ clazz.students.count }} 人 · 教师 {{ clazz.teachers.count }} 人
+                            学生 {{ adminClass.memberships.count }} 人
                         </span>
                     </div>
                     <form method="post" class="m-0"
-                          onsubmit="return confirm('确认把班级 {{ clazz.name }} 移出本课程？');">
+                          onsubmit="return confirm('确认把班级 {{ adminClass.name }} 移出本课程？');">
                         {% csrf_token %}
-                        <input type="hidden" name="action" value="removeClazz">
-                        <input type="hidden" name="clazzId" value="{{ clazz.id }}">
+                        <input type="hidden" name="action" value="removeAdminClass">
+                        <input type="hidden" name="adminClassId" value="{{ adminClass.id }}">
                         <button type="submit" class="btn btn-sm btn-outline-danger">移除</button>
                     </form>
                 </div>
@@ -137,12 +137,12 @@
             <div class="card-footer">
                 <form method="post" class="mb-2">
                     {% csrf_token %}
-                    <input type="hidden" name="action" value="addClazz">
+                    <input type="hidden" name="action" value="addAdminClass">
                     <label class="form-label small mb-1">下拉添加本学院已有班级</label>
                     <div class="input-group">
-                        <select class="form-select" name="clazzId">
-                            {% for clazz in availableClazzes %}
-                            <option value="{{ clazz.id }}">{{ clazz.name }}</option>
+                        <select class="form-select" name="adminClassId">
+                            {% for adminClass in availableAdminClasses %}
+                            <option value="{{ adminClass.id }}">{{ adminClass.name }}</option>
                             {% empty %}
                             <option value="">本学院暂无未添加班级</option>
                             {% endfor %}
@@ -153,6 +153,70 @@
                 <p class="text-secondary small mb-0">
                     💡 批量导入学生时按学号格式自动匹配班级（班级不存在则自动创建）。
                 </p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4 mt-1">
+    {# ④ 教学班（组班与教师分配入口） #}
+    <div class="col-12">
+        <div class="card shadow-sm">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span class="fw-bold">🎓 教学班（{{ teachingClasses|length }}）</span>
+                <button class="btn btn-sm btn-primary" data-bs-toggle="collapse" data-bs-target="#createTeachingClassForm">➕ 组建教学班</button>
+            </div>
+            <div class="collapse" id="createTeachingClassForm">
+                <div class="card-body border-bottom">
+                    <form method="post">
+                        {% csrf_token %}
+                        <input type="hidden" name="action" value="createTeachingClass">
+                        <div class="row g-2 align-items-end">
+                            <div class="col-auto">
+                                <label class="form-label small mb-1">教学班名称（同学期同课程唯一）</label>
+                                <input type="text" class="form-control" name="name"
+                                       placeholder="如：计科2301-合班" required>
+                            </div>
+                            <div class="col">
+                                <label class="form-label small mb-1">勾选组成行政班（至少一个，可多选）</label>
+                                <div class="border rounded-3 px-3 py-2" style="max-height: 120px; overflow-y: auto;">
+                                    {% for adminClass in adminClasses %}
+                                    <label class="form-check form-check-inline mb-0">
+                                        <input class="form-check-input" type="checkbox" name="adminClassIds" value="{{ adminClass.id }}">
+                                        <span class="form-check-label small">{{ adminClass.name }}</span>
+                                    </label>
+                                    {% empty %}
+                                    <span class="text-secondary small">本课程还没有行政班，先在上方添加班级</span>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                            <div class="col-auto">
+                                <button type="submit" class="btn btn-primary">组建</button>
+                            </div>
+                        </div>
+                    </form>
+                    <p class="text-secondary small mb-0 mt-2">
+                        💡 学期默认当前学期；新教学班自动继承本课程教师池，教师分配在教学班详情里调整。
+                    </p>
+                </div>
+            </div>
+            <div class="card-body">
+                {% for tc in teachingClasses %}
+                <div class="d-flex justify-content-between align-items-center border rounded-3 px-3 py-2 mb-2">
+                    <div>
+                        <a href="{% url 'office_teaching_class_detail' course.id department.id tc.id %}"
+                           class="fw-bold text-decoration-none">{{ tc.name }}</a>
+                        <span class="badge text-bg-light border ms-2">{{ tc.term }}</span>
+                        <span class="text-secondary small ms-2">
+                            {{ tc.admin_classes.count }} 个班级 · 教师 {{ tc.teachers.count }} 人
+                        </span>
+                    </div>
+                    <a href="{% url 'office_teaching_class_detail' course.id department.id tc.id %}"
+                       class="btn btn-sm btn-outline-primary">进入管理</a>
+                </div>
+                {% empty %}
+                <p class="text-secondary mb-0">还没有教学班，点击右上角「组建教学班」</p>
+                {% endfor %}
             </div>
         </div>
     </div>

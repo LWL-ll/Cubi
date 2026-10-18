@@ -20,8 +20,8 @@
                 <div class="small text-white-50">教师工作台</div>
             </div>
             <nav class="flex-grow-1">
-                <a class="office-nav {% if request.resolver_match.url_name == 'teacher_clazz_list' or request.resolver_match.url_name == 'teacher_clazz_detail' %}active{% endif %}"
-                   href="{% url 'teacher_clazz_list' %}">🏫 我的班级</a>
+                <a class="office-nav {% if request.resolver_match.url_name == 'teacher_teaching_class_list' or request.resolver_match.url_name == 'teacher_teaching_class_detail' %}active{% endif %}"
+                   href="{% url 'teacher_teaching_class_list' %}">🏫 我的教学班级</a>
                 <a class="office-nav {% if request.resolver_match.url_name == 'teacher_question_bank' %}active{% endif %}"
                    href="{% url 'teacher_question_bank' %}">📝 作业题库</a>
             </nav>

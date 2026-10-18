@@ -1,22 +1,21 @@
 {% extends 'teaching/base_teacher.html' %}
 
-{% block title %}{{ clazz.name }} - 教师工作台{% endblock %}
+{% block title %}{{ teachingClass.name }} - 教师工作台{% endblock %}
 
 {% block content %}
-{# 顶部：班级信息卡 #}
+{# 顶部：教学班信息卡 #}
 <div class="d-flex justify-content-between align-items-center mb-3">
     <div>
-        <h4 class="fw-bold mb-1">{{ clazz.name }}</h4>
+        <h4 class="fw-bold mb-1">{{ teachingClass.name }}</h4>
         <p class="text-secondary mb-0">
-            🏛️ {{ clazz.college.name|default:'未分学院' }}
-            &nbsp;·&nbsp; 👨‍🎓 {{ clazz.students.count }} 人
-            &nbsp;·&nbsp; 👩‍🏫 {{ clazz.teachers.count }} 位教师
+            🏛️ {{ department.name|default:'未分学院' }}
+            &nbsp;·&nbsp; 📚 {{ course.name }}
+            &nbsp;·&nbsp; 👨‍🎓 {{ studentCount }} 人
+            &nbsp;·&nbsp; 🗓️ {{ teachingClass.term }}
         </p>
     </div>
     <div>
-        {% for course in courses %}
-        <span class="badge rounded-pill text-bg-primary me-1">{{ course.name }}</span>
-        {% endfor %}
+        <span class="badge rounded-pill text-bg-primary">{{ course.name }}</span>
     </div>
 </div>
 
@@ -25,7 +24,7 @@
     {% for tabKey, tabName, tabIcon in visibleTabs %}
     <li class="nav-item">
         <a class="nav-link {% if tabKey == currentTab %}active{% endif %}"
-           href="{% url 'teacher_clazz_detail' clazz.id %}?tab={{ tabKey }}">{{ tabIcon }} {{ tabName }}</a>
+           href="{% url 'teacher_teaching_class_detail' teachingClass.id %}?tab={{ tabKey }}">{{ tabIcon }} {{ tabName }}</a>
     </li>
     {% endfor %}
 </ul>
@@ -35,7 +34,7 @@
     <div class="card-body text-center text-secondary py-5">
         <div class="fs-1 mb-2">🚧</div>
         <h5>{{ currentTab }} 功能开发中</h5>
-        <p class="mb-0">框架轮已打通入口与教学班级校验，该功能将在后续轮次实现</p>
+        <p class="mb-0">框架轮已打通入口与教学班校验，该功能将在后续轮次实现</p>
     </div>
 </div>
 {% endblock %}

@@ -1,36 +1,68 @@
-"""教学工作台安全工具：教学班级对象级校验 + 页面入口校验
+"""教学工作台安全工具：教学班对象级校验 + 页面入口校验
 
 《教师.xmind》核心约束：教师的所有权限仅限教学班级。
-学生权限的边界同理：学生只能访问自己所在班级的数据。
+学生权限的边界同理：学生只能访问自己所在教学班的数据。
 分组权限码只回答「能不能用这个功能」；
-这里的 getTeacherClazz/getStudentClazz 回答「能不能对这个班用」——
-所有教学功能接口（API 和页面）都必须先过这一层校验，
-否则 404（不暴露班级存在性）。
+这里的 getTeacherTeachingClass/getStudentTeachingClass 回答
+「能不能对这个教学班用」——所有教学功能接口（API 和页面）
+都必须先过这一层校验，否则 404（不暴露教学班存在性）。
+
+V2 表结构（docs/数据库表重构设计.md）：
+- 教师 → 教学班.teachers（1 跳）
+- 学生 → 学校身份 → 学生资料 → 当前成员关系 → 行政班 → 教学班（3 跳推导）
 """
 from functools import wraps
 
 from django.http import Http404, HttpResponseForbidden
 from django.shortcuts import redirect
 
-from academics.models import Clazz
+from academics.models import ClassMembership, TeachingClass
+from users.models import SchoolIdentity
 
 # 教师/学生分组中文名（与 users/permissions.py 的 GROUP_NAMES 保持一致）
 TEACHER_GROUP_NAME = '教师'
 STUDENT_GROUP_NAME = '学生'
 
 
-def getTeacherClazz(user, clazzId):
-    """取教师的教学班级：班级教师表必须包含当前用户，否则 404
+def getTeacherTeachingClass(user, teachingClassId):
+    """取教师的教学班：教学班教师表必须包含当前用户，否则 404
 
     超级用户直接放行（管理员排查问题用）。
     """
-    clazz = Clazz.objects.filter(id=clazzId).first()
-    if clazz is None:
-        raise Http404('班级不存在')
-    if not (user.is_superuser or clazz.teachers.filter(id=user.id).exists()):
-        # 统一 404：不让外人探测班级是否存在
-        raise Http404('班级不存在')
-    return clazz
+    teachingClass = TeachingClass.objects.filter(id=teachingClassId).first()
+    if teachingClass is None:
+        raise Http404('教学班不存在')
+    if not (user.is_superuser
+            or teachingClass.teachers.filter(id=user.id).exists()):
+        # 统一 404：不让外人探测教学班是否存在
+        raise Http404('教学班不存在')
+    return teachingClass
+
+
+def getStudentTeachingClass(user, teachingClassId):
+    """取学生所在教学班：3 跳推导（身份 → 资料 → 成员关系 → 行政班 → 教学班）
+
+    只认「当前在班」的成员关系（left_at 为空）；
+    学生不在任何组成行政班中时 404，不暴露教学班存在性。
+    """
+    teachingClass = TeachingClass.objects.filter(id=teachingClassId).first()
+    if teachingClass is None:
+        raise Http404('教学班不存在')
+    if user.is_superuser:
+        return teachingClass
+    # 第 1 跳：学生身份（identity_type=student）
+    studentIdentity = user.identities.filter(
+        identity_type=SchoolIdentity.IDENTITY_STUDENT).first()
+    if studentIdentity is None or not hasattr(studentIdentity, 'student_profile'):
+        raise Http404('教学班不存在')
+    # 第 2~3 跳：当前成员关系 → 行政班 → 教学班
+    inTeachingClass = ClassMembership.objects.filter(
+        student_profile=studentIdentity.student_profile,
+        left_at__isnull=True,
+        admin_class__teaching_classes=teachingClass).exists()
+    if not inTeachingClass:
+        raise Http404('教学班不存在')
+    return teachingClass
 
 
 def requireTeacherGroup(viewFunc):
@@ -47,20 +79,6 @@ def requireTeacherGroup(viewFunc):
             return HttpResponseForbidden('403：仅教师可访问教师工作台')
         return viewFunc(request, *args, **kwargs)
     return wrapper
-
-
-def getStudentClazz(user, clazzId):
-    """取学生所在班级：班级学生表必须包含当前用户，否则 404
-
-    学生权限边界 = 自己所在班级，所有学生功能接口（API 和页面）
-    涉及班级数据时都必须先过这一层，统一 404 不暴露班级存在性。
-    """
-    clazz = Clazz.objects.filter(id=clazzId).first()
-    if clazz is None:
-        raise Http404('班级不存在')
-    if not (user.is_superuser or clazz.students.filter(id=user.id).exists()):
-        raise Http404('班级不存在')
-    return clazz
 
 
 def requireStudentGroup(viewFunc):

@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -20,13 +21,20 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-v8g6io&!_w@$!_c#+j7059)lg_ncn+2j5(&g_=!qh0x*l7g3my'
+# 生产环境必须通过环境变量 DJANGO_SECRET_KEY 注入（严禁再进仓库）；
+# 开发默认值仅本地演示用
+SECRET_KEY = os.environ.get(
+    'DJANGO_SECRET_KEY', 'django-insecure-v8g6io&!_w@$!_c#+j7059)lg_ncn+2j5(&g_=!qh0x*l7g3my')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# 生产环境设 DJANGO_DEBUG=0；默认开（开发）
+DEBUG = os.environ.get('DJANGO_DEBUG', '1') == '1'
 
-# 开发期允许的访问域名（testserver 供 Django 测试客户端使用；交付时追加正式域名）
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'testserver']
+# 开发期允许的访问域名（testserver 供 Django 测试客户端使用）；
+# 生产环境追加 DJANGO_ALLOWED_HOSTS=域名1,域名2 环境变量
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'testserver'] + [
+    host.strip() for host in os.environ.get('DJANGO_ALLOWED_HOSTS', '').split(',')
+    if host.strip()]
 
 
 # Application definition
@@ -68,6 +76,8 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     # axes 登录失败记录中间件（必须放在 AuthenticationMiddleware 之后）
     'axes.middleware.AxesMiddleware',
+    # 首次登录强制改密兜底（必须在 AuthenticationMiddleware 之后读 request.user）
+    'users.middleware.ForcePasswordChangeMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -157,6 +167,10 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+# 媒体文件（班级资料、作业图片提交依赖；受保护下载见《后端落地问题清单》2.6）
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
@@ -180,4 +194,13 @@ SESSION_COOKIE_HTTPONLY = True     # JS 读不到会话 Cookie，防 XSS 窃取
 CSRF_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'    # 防跨站请求伪造
 SESSION_COOKIE_AGE = 2 * 60 * 60   # 会话 2 小时过期
+
+# ==================== OJ 判题沙箱（go-judge）对接配置 ====================
+# 对接细节与判题流程见 docs/OJ对接设计.md
+# 认证方式为 Authorization: Bearer <OJ_AUTH_TOKEN>，实测于 2026-10-18
+OJ_BASE_URL = os.environ.get('OJ_BASE_URL', 'https://oj.liuwenli.cn')
+# 判题接口凭证：只从环境变量读取，严禁硬编码进仓库（防止密钥泄露）
+OJ_AUTH_TOKEN = os.environ.get('OJ_AUTH_TOKEN', '')
+# 单次判题 HTTP 超时（秒）：必须大于单题最大 clockLimit（当前 10s 档），留网络余量
+OJ_RUN_TIMEOUT = 30
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True  # 关闭浏览器会话即失效

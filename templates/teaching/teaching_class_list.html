@@ -1,0 +1,34 @@
+{% extends 'teaching/base_teacher.html' %}
+
+{% block title %}我的教学班级 - 教师工作台{% endblock %}
+
+{% block content %}
+<h4 class="fw-bold mb-3">我的教学班级</h4>
+{% if items %}
+<div class="row g-3">
+    {% for item in items %}
+    <div class="col-md-6 col-xl-4">
+        <div class="card shadow-sm border-0 h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <h5 class="fw-bold mb-1">{{ item.tc.name }}</h5>
+                        <p class="text-secondary small mb-2">🏛️ {{ item.tc.course_college.department.name|default:'未分学院' }}</p>
+                    </div>
+                    <span class="badge rounded-pill text-bg-light border">👨‍🎓 {{ item.studentCount }} 人</span>
+                </div>
+                {# 课程徽章 + 学期（教学班只挂一个 课程×学院，故单课程展示） #}
+                <div class="mb-3">
+                    <span class="badge rounded-pill text-bg-primary me-1">{{ item.tc.course_college.course.name }}</span>
+                    <span class="badge rounded-pill text-bg-light border">{{ item.tc.term }}</span>
+                </div>
+                <a href="{% url 'teacher_teaching_class_detail' item.tc.id %}" class="btn btn-primary btn-sm w-100">进入教学班</a>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="alert alert-secondary">你还没有被分配到任何教学班级，请联系教务分配。</div>
+{% endif %}
+{% endblock %}

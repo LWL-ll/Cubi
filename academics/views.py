@@ -1,4 +1,5 @@
 import io
+from datetime import date
 
 from django.contrib import messages
 from django.contrib.auth.models import Group
@@ -7,11 +8,16 @@ from django.shortcuts import get_object_or_404, redirect, render
 
 from openpyxl import load_workbook
 
-from users.models import User
+from users.models import SchoolIdentity, StudentProfile, TeacherProfile, User
 from users.permissions import hasPerm, requirePerm
 
-from .models import Clazz, College, Course, CourseCollege
+from .models import (AdminClass, ClassMembership, Course, CourseCollege,
+                     Department, Major, TeachingClass)
+from .services import enrollStudent
 from .student_no import parseStudentNo
+
+# 当前学期：教学班组班默认值（后续做学期管理后再接学期表）
+CURRENT_TERM = '2026-2027-1'
 
 
 # ---------- 工具函数 ----------
@@ -53,13 +59,92 @@ def isTeacherUser(user):
 
 
 def findTeacherByNo(teacherNo):
-    """按工号查教师账号；不存在返回 None，非教师分组返回字符串错误原因"""
+    """按工号查教师账号；不存在/非教师分组/无教师档案 返回错误原因
+
+    严格化（2026-10-18）：教师必须有教师身份档案
+    （SchoolIdentity + TeacherProfile）才能进入任课流程，
+    手工在 admin 后台建的裸分组账号不允许直接添加。
+    """
     user = User.objects.filter(username=teacherNo).first()
     if user is None:
         return None, f'工号 {teacherNo} 的教师不存在，请先在批量导入中导入教师'
     if not isTeacherUser(user):
         return None, f'工号 {teacherNo} 不是教师账号'
+    if not user.identities.filter(
+            identity_type=SchoolIdentity.IDENTITY_TEACHER,
+            teacher_profile__isnull=False).exists():
+        return None, f'工号 {teacherNo} 缺少教师档案，请通过批量导入创建教师'
     return user, ''
+
+
+def ensureDepartment(name):
+    """按名称取学院，不存在则创建（编码 D + 递增两位数字）
+
+    学院由学号解析自动生成，无单独导入入口；
+    取现有最大数字编码 + 1，避免删除学院后编码重复。
+    """
+    department = Department.objects.filter(name=name).first()
+    if department is not None:
+        return department
+    codes = Department.objects.filter(code__startswith='D').values_list(
+        'code', flat=True)
+    nextNo = max((int(code[1:]) for code in codes
+                  if code[1:].isdigit()), default=0) + 1
+    return Department.objects.create(name=name, code=f'D{nextNo:02d}')
+
+
+def ensureMajor(department, majorCode, majorName):
+    """按（学院, 专业码）取专业，不存在则创建"""
+    major, _ = Major.objects.get_or_create(
+        department=department, code=majorCode, defaults={'name': majorName})
+    return major
+
+
+def ensureAdminClass(major, enrollmentYear, clazzName, classCode=''):
+    """按（专业, 年级, 名称）取行政班，不存在则创建"""
+    adminClass, _ = AdminClass.objects.get_or_create(
+        major=major, enrollment_year=enrollmentYear, name=clazzName,
+        defaults={'code': classCode})
+    return adminClass
+
+
+def createStudentAccount(username, name, password, adminClass, studentGroup):
+    """建学生账号 + 学校身份 + 学生资料 + 班级成员关系（V2 三连）"""
+    user = User.objects.create_user(username=username, password=password)
+    user.name = name
+    user.groups.add(studentGroup)
+    # 导入账号初始密码在 xlsx 中明文流转，标记首次登录须改密
+    user.must_change_password = True
+    user.save()
+    identity = SchoolIdentity.objects.create(
+        user=user, school_number=username,
+        identity_type=SchoolIdentity.IDENTITY_STUDENT)
+    # 入学年份优先取班级年级，班级没年级时退化学号前 4 位
+    enrollmentYear = adminClass.enrollment_year
+    if enrollmentYear is None:
+        enrollmentYear = (int(username[:4])
+                          if username[:4].isdigit() else date.today().year)
+    profile = StudentProfile.objects.create(
+        identity=identity, major=adminClass.major,
+        enrollment_year=enrollmentYear)
+    # 统一走服务层入班（一人一班约束收敛在 services.enrollStudent）
+    enrollStudent(profile, adminClass)
+    return user
+
+
+def createTeacherAccount(username, name, password, teacherGroup):
+    """建教师账号 + 学校身份 + 教师资料（V2）"""
+    user = User.objects.create_user(username=username, password=password)
+    user.name = name
+    user.groups.add(teacherGroup)
+    # 导入账号初始密码在 xlsx 中明文流转，标记首次登录须改密
+    user.must_change_password = True
+    user.save()
+    identity = SchoolIdentity.objects.create(
+        user=user, school_number=username,
+        identity_type=SchoolIdentity.IDENTITY_TEACHER)
+    TeacherProfile.objects.create(identity=identity)
+    return user
 
 
 def importCourses(rows):
@@ -80,7 +165,7 @@ def importCourses(rows):
 
 
 def importTeachers(rows):
-    """按行导入教师账号：每行 [工号, 姓名, 初始密码]，并加入教师分组"""
+    """按行导入教师账号：每行 [工号, 姓名, 初始密码]，建身份与资料并加入教师分组"""
     okList, errList = [], []
     teacherGroup = getGroup('教师')
     for lineNo, cells in enumerate(rows, start=2):
@@ -91,16 +176,13 @@ def importTeachers(rows):
         if User.objects.filter(username=username).exists():
             errList.append((lineNo, f'工号 {username} 已存在'))
             continue
-        user = User.objects.create_user(username=username, password=password)
-        user.name = name
-        user.groups.add(teacherGroup)
-        user.save()
+        createTeacherAccount(username, name, password, teacherGroup)
         okList.append(f'{name}（{username}）')
     return okList, errList
 
 
 def importTeachersToCourse(rows, cc):
-    """导入教师并加入课程×学院的教师池，同时自动分配到本课程已关联的所有班级
+    """导入教师并加入课程×学院的教师池，同时自动加入已组建的教学班
 
     每行 [工号, 姓名, 初始密码]，重复工号按行报错跳过。
     """
@@ -114,20 +196,17 @@ def importTeachersToCourse(rows, cc):
         if User.objects.filter(username=username).exists():
             errList.append((lineNo, f'工号 {username} 已存在'))
             continue
-        user = User.objects.create_user(username=username, password=password)
-        user.name = name
-        user.groups.add(teacherGroup)
-        user.save()
-        # 加入本课程教师池，并自动分配到本课程已关联的每个班级
+        user = createTeacherAccount(username, name, password, teacherGroup)
+        # 加入本课程教师池，并自动分配到本课程已组建的每个教学班
         cc.teachers.add(user)
-        for clazz in cc.clazzes.all():
-            clazz.teachers.add(user)
+        for teachingClass in cc.teaching_classes.all():
+            teachingClass.teachers.add(user)
         okList.append(f'{name}（{username}）')
     return okList, errList
 
 
-def importStudents(rows, clazz):
-    """按行导入学生账号到指定班级：每行 [学号, 姓名, 初始密码]，并加入学生分组"""
+def importStudents(rows, adminClass):
+    """按行导入学生账号到指定行政班：每行 [学号, 姓名, 初始密码]"""
     okList, errList = [], []
     studentGroup = getGroup('学生')
     for lineNo, cells in enumerate(rows, start=2):
@@ -138,17 +217,13 @@ def importStudents(rows, clazz):
         if User.objects.filter(username=username).exists():
             errList.append((lineNo, f'学号 {username} 已存在'))
             continue
-        user = User.objects.create_user(username=username, password=password)
-        user.name = name
-        user.groups.add(studentGroup)
-        user.save()
-        clazz.students.add(user)
+        createStudentAccount(username, name, password, adminClass, studentGroup)
         okList.append(f'{name}（{username}）')
     return okList, errList
 
 
 def importStudentsAuto(rows):
-    """按学号格式自动分班导入学生：解析出学院/班级后自动创建并按班入学生"""
+    """按学号格式自动分班导入学生：解析出学院/专业/班级后自动创建并按班入学生"""
     okList, errList = [], []
     studentGroup = getGroup('学生')
     for lineNo, cells in enumerate(rows, start=2):
@@ -156,26 +231,21 @@ def importStudentsAuto(rows):
             errList.append((lineNo, '学号、姓名、密码均不能为空'))
             continue
         username, name, password = cells[0], cells[1], cells[2]
-        # 按学号格式解析出学院和班级（格式不对直接报错，不落库）
+        # 按学号格式解析学院/专业/班级（格式不对直接报错，不落库）
         try:
-            collegeName, clazzName = parseStudentNo(username)
+            departmentName, majorCode, majorName, clazzName = parseStudentNo(username)
         except ValueError as err:
             errList.append((lineNo, str(err)))
             continue
         if User.objects.filter(username=username).exists():
             errList.append((lineNo, f'学号 {username} 已存在'))
             continue
-        college, _ = College.objects.get_or_create(name=collegeName)
-        clazz, _ = Clazz.objects.get_or_create(name=clazzName, defaults={'college': college})
-        # 历史班级可能没有学院，自动补上
-        if clazz.college_id is None:
-            clazz.college = college
-            clazz.save()
-        user = User.objects.create_user(username=username, password=password)
-        user.name = name
-        user.groups.add(studentGroup)
-        user.save()
-        clazz.students.add(user)
+        # 学院/专业/班级不存在则按学号规则自动创建（班级编码 = 专业码 + 班序）
+        department = ensureDepartment(departmentName)
+        major = ensureMajor(department, majorCode, majorName)
+        adminClass = ensureAdminClass(
+            major, int(username[0:4]), clazzName, classCode=username[4:8])
+        createStudentAccount(username, name, password, adminClass, studentGroup)
         okList.append(f'{name}（{username} → {clazzName}）')
     return okList, errList
 
@@ -210,7 +280,7 @@ def unsetCourseCollegeLeader(cc):
 def renderImportPage(request):
     """批量导入页：导入课程 / 导入教师 / 导入班级学生（xlsx 上传）
 
-    学生导入按学号格式自动分配学院和班级，不再手动选择目标班级。
+    学生导入按学号格式自动分配学院、专业和班级，不再手动选择目标班级。
     """
     if request.method == 'POST':
         importType = request.POST.get('type', '')
@@ -242,7 +312,7 @@ def renderImportPage(request):
 @requirePerm('course:manage')
 def renderCourseList(request):
     """课程列表：展示已导入的全部课程及开设学院数"""
-    courses = Course.objects.all().prefetch_related('course_colleges__college')
+    courses = Course.objects.all().prefetch_related('course_colleges__department')
     return render(request, 'office/course_list.html', {'courses': courses})
 
 
@@ -256,40 +326,44 @@ def renderCourseDetail(request, courseId):
             messages.error(request, '没有权限执行该操作')
             return redirect('office_course_detail', courseId=courseId)
         action = request.POST.get('action', '')
-        if action == 'addCollege':
-            college = get_object_or_404(College, id=request.POST.get('collegeId'))
-            cc, created = CourseCollege.objects.get_or_create(course=course, college=college)
-            messages.success(request, f'已为课程开设学院 {college.name}')
-        elif action == 'removeCollege':
-            college = get_object_or_404(College, id=request.POST.get('collegeId'))
-            CourseCollege.objects.filter(course=course, college=college).delete()
-            messages.success(request, f'已移除学院 {college.name}（其下的组长、教师池、班级分配一并解除）')
+        if action == 'addDepartment':
+            department = get_object_or_404(Department, id=request.POST.get('departmentId'))
+            cc, created = CourseCollege.objects.get_or_create(
+                course=course, department=department)
+            messages.success(request, f'已为课程开设学院 {department.name}')
+        elif action == 'removeDepartment':
+            department = get_object_or_404(Department, id=request.POST.get('departmentId'))
+            CourseCollege.objects.filter(course=course, department=department).delete()
+            messages.success(request,
+                f'已移除学院 {department.name}（其下的组长、教师池、班级分配、教学班一并解除）')
         return redirect('office_course_detail', courseId=courseId)
 
     ccList = CourseCollege.objects.filter(course=course).select_related(
-        'college', 'leader').prefetch_related('clazzes', 'teachers')
+        'department', 'leader').prefetch_related('admin_classes', 'teachers')
     # 可添加的学院 = 还没有为这门课开设的学院
-    availableColleges = College.objects.exclude(course_colleges__course=course)
+    availableDepartments = Department.objects.exclude(course_colleges__course=course)
     return render(request, 'office/course_detail.html', {
-        'course': course, 'ccList': ccList, 'availableColleges': availableColleges})
+        'course': course, 'ccList': ccList,
+        'availableDepartments': availableDepartments})
 
 
 @requirePerm('course:manage')
-def renderCourseCollege(request, courseId, collegeId):
-    """课程×学院 设置页：课程组组长、本课程教师池、本课程班级"""
-    cc = get_object_or_404(CourseCollege, course_id=courseId, college_id=collegeId)
+def renderCourseCollege(request, courseId, departmentId):
+    """课程×学院 设置页：课程组组长、本课程教师池、本课程行政班、教学班"""
+    cc = get_object_or_404(CourseCollege, course_id=courseId, department_id=departmentId)
     if request.method == 'POST':
         action = request.POST.get('action', '')
         # 每个动作细分权限码校验
         if action in ('setLeader', 'unsetLeader'):
             needCode = 'user:assign_role'
-        elif action in ('addClazz', 'removeClazz'):
+        elif action in ('addAdminClass', 'removeAdminClass', 'createTeachingClass'):
             needCode = 'course:assign_class'
         else:
             needCode = 'class:manage'  # importTeachers / importStudents
         if not hasPerm(request.user, needCode):
             messages.error(request, '没有权限执行该操作')
-            return redirect('office_course_college', courseId=courseId, collegeId=collegeId)
+            return redirect('office_course_college',
+                            courseId=courseId, departmentId=departmentId)
 
         if action == 'setLeader':
             teacherNo = request.POST.get('teacherNo', '').strip()
@@ -312,18 +386,39 @@ def renderCourseCollege(request, courseId, collegeId):
             else:
                 okList, errList = importTeachersToCourse(parseXlsxRows(csvFile), cc)
                 showImportResult(request, '本课程教师', okList, errList)
-        elif action == 'addClazz':
-            clazz = get_object_or_404(Clazz, id=request.POST.get('clazzId'))
+        elif action == 'addAdminClass':
+            adminClass = get_object_or_404(AdminClass, id=request.POST.get('adminClassId'))
             # 只允许添加本学院的班级（下拉框里本来就是本学院的，这里再兜底校验一次）
-            if clazz.college_id != cc.college_id:
-                messages.error(request, f'班级 {clazz.name} 不属于 {cc.college.name}，无法添加')
+            if adminClass.major.department_id != cc.department_id:
+                messages.error(request,
+                    f'班级 {adminClass.name} 不属于 {cc.department.name}，无法添加')
             else:
-                cc.clazzes.add(clazz)
-                messages.success(request, f'已添加班级 {clazz.name}')
-        elif action == 'removeClazz':
-            clazz = get_object_or_404(Clazz, id=request.POST.get('clazzId'))
-            cc.clazzes.remove(clazz)
-            messages.success(request, f'已移除班级 {clazz.name}（学生和教师账号保留）')
+                cc.admin_classes.add(adminClass)
+                messages.success(request, f'已添加班级 {adminClass.name}')
+        elif action == 'removeAdminClass':
+            adminClass = get_object_or_404(AdminClass, id=request.POST.get('adminClassId'))
+            cc.admin_classes.remove(adminClass)
+            messages.success(request, f'已移除班级 {adminClass.name}（学生和教师账号保留）')
+        elif action == 'createTeachingClass':
+            name = request.POST.get('name', '').strip()
+            if not name:
+                messages.error(request, '教学班名称不能为空')
+            elif TeachingClass.objects.filter(
+                    course_college=cc, term=CURRENT_TERM, name=name).exists():
+                messages.error(request, f'同学期已存在同名教学班 {name}')
+            else:
+                adminClassIds = request.POST.getlist('adminClassIds')
+                adminClasses = cc.admin_classes.filter(id__in=adminClassIds)
+                if not adminClasses:
+                    messages.error(request, '请至少选择一个组成班级')
+                else:
+                    teachingClass = TeachingClass.objects.create(
+                        name=name, term=CURRENT_TERM, course_college=cc)
+                    teachingClass.admin_classes.set(adminClasses)
+                    # 新教学班默认继承课程教师池
+                    teachingClass.teachers.set(cc.teachers.all())
+                    messages.success(request,
+                        f'已创建教学班 {name}（{adminClasses.count()} 个班级，已继承教师池）')
         elif action == 'importStudents':
             csvFile = request.FILES.get('file')
             if not csvFile:
@@ -331,85 +426,130 @@ def renderCourseCollege(request, courseId, collegeId):
             else:
                 okList, errList = importStudentsAuto(parseXlsxRows(csvFile))
                 showImportResult(request, '学生', okList, errList)
-        return redirect('office_course_college', courseId=courseId, collegeId=collegeId)
+        return redirect('office_course_college', courseId=courseId, departmentId=departmentId)
 
-    clazzes = cc.clazzes.all().prefetch_related('students', 'teachers')
+    adminClasses = cc.admin_classes.prefetch_related('memberships')
     teachers = cc.teachers.all()
-    # 可添加的班级 = 本学院下还没关联到本课程的班级
-    availableClazzes = cc.college.clazzes.exclude(course_colleges=cc)
+    teachingClasses = cc.teaching_classes.prefetch_related(
+        'teachers', 'admin_classes')
+    # 可添加的班级 = 本学院下还没关联到本课程的行政班
+    availableAdminClasses = AdminClass.objects.filter(
+        major__department=cc.department).exclude(course_colleges=cc)
     return render(request, 'office/course_college.html', {
-        'cc': cc, 'course': cc.course, 'college': cc.college,
-        'clazzes': clazzes, 'teachers': teachers, 'availableClazzes': availableClazzes})
+        'cc': cc, 'course': cc.course, 'department': cc.department,
+        'adminClasses': adminClasses, 'teachers': teachers,
+        'teachingClasses': teachingClasses,
+        'availableAdminClasses': availableAdminClasses})
 
 
 @requirePerm('class:manage')
-def renderClassDetail(request, courseId, collegeId, clazzId):
-    """班级详情：分配/移除教师（下拉或工号添加）、导入学生到本班、查看学生列表
+def renderClassDetail(request, courseId, departmentId, adminClassId):
+    """行政班详情（页面）：查看学生与所属教学班
 
     必须从 课程×学院 入口进入（路径自带课程上下文）；
-    教师下拉框候选 = 该课程×学院教师池中还没分配到本班的教师。
+    教师分配在 V2 下挂教学班，移步教学班详情页操作。
     """
-    cc = get_object_or_404(CourseCollege, course_id=courseId, college_id=collegeId)
-    clazz = get_object_or_404(Clazz, id=clazzId)
+    cc = get_object_or_404(CourseCollege, course_id=courseId, department_id=departmentId)
+    adminClass = get_object_or_404(AdminClass, id=adminClassId)
     # 校验班级确实属于该课程×学院，防止跨课程访问（404 避免信息泄露）
-    if not cc.clazzes.filter(id=clazz.id).exists():
+    if not cc.admin_classes.filter(id=adminClass.id).exists():
         raise Http404('班级不属于该课程学院')
 
     def back():
         """统一跳回本班级详情页（带课程上下文）"""
         return redirect('office_class_detail', courseId=courseId,
-                        collegeId=collegeId, clazzId=clazzId)
+                        departmentId=departmentId, adminClassId=adminClassId)
 
     if request.method == 'POST':
         action = request.POST.get('action', '')
-        if action in ('addTeacher', 'removeTeacher'):
-            needCode = 'class:assign_teacher'
-        else:
-            needCode = 'class:manage'  # importStudents
-        if not hasPerm(request.user, needCode):
-            messages.error(request, '没有权限执行该操作')
-            return back()
-
-        if action == 'addTeacher':
-            # 两种方式：下拉框选教师（teacherId）或直接输工号（teacherNo）
-            teacherNo = request.POST.get('teacherNo', '').strip()
-            if teacherNo:
-                teacher, errMsg = findTeacherByNo(teacherNo)
-                if errMsg:
-                    messages.error(request, errMsg)
-                else:
-                    # 工号添加的教师同时加入本课程教师池
-                    clazz.teachers.add(teacher)
-                    cc.teachers.add(teacher)
-                    messages.success(request,
-                        f'已添加教师 {teacher.name or teacher.username}（{teacherNo}）并加入本课程教师池')
-            else:
-                teacher = get_object_or_404(User, id=request.POST.get('teacherId'))
-                # 下拉框候选来自教师池，这里再兜底校验一次防止伪造请求
-                if not cc.teachers.filter(id=teacher.id).exists():
-                    messages.error(request, '该教师不在本课程教师池中，无法分配')
-                else:
-                    clazz.teachers.add(teacher)
-                    messages.success(request, f'已添加教师 {teacher.name or teacher.username}')
-        elif action == 'removeTeacher':
-            teacher = get_object_or_404(User, id=request.POST.get('teacherId'))
-            clazz.teachers.remove(teacher)
-            messages.success(request, f'已移除教师 {teacher.name or teacher.username}')
-        elif action == 'importStudents':
+        if action == 'importStudents':
+            if not hasPerm(request.user, 'class:manage'):
+                messages.error(request, '没有权限执行该操作')
+                return back()
             csvFile = request.FILES.get('file')
             if not csvFile:
                 messages.error(request, '请先选择要上传的 xlsx 文件')
             else:
                 rows = parseXlsxRows(csvFile)
-                okList, errList = importStudents(rows, clazz)
+                okList, errList = importStudents(rows, adminClass)
                 showImportResult(request, '学生', okList, errList)
+        else:
+            messages.error(request, '未知操作')
         return back()
 
-    students = clazz.students.all().order_by('username')
-    teachers = clazz.teachers.all()
-    # 可分配的教师 = 本课程×学院教师池里还没分配到这个班的
-    availableTeachers = cc.teachers.exclude(id__in=teachers.values('id'))
+    # 学生经成员关系推导（只列当前在班成员）
+    memberships = adminClass.memberships.select_related(
+        'student_profile__identity__user').filter(left_at__isnull=True)
+    students = [m.student_profile.identity.user for m in memberships]
+    # 本班参与的教学班（当前课程×学院下）
+    teachingClasses = adminClass.teaching_classes.filter(course_college=cc)
     return render(request, 'office/class_detail.html', {
-        'cc': cc, 'course': cc.course, 'college': cc.college, 'clazz': clazz,
-        'students': students, 'teachers': teachers,
+        'cc': cc, 'course': cc.course, 'department': cc.department,
+        'adminClass': adminClass,
+        'students': students, 'teachingClasses': teachingClasses})
+
+
+@requirePerm('class:manage')
+def renderTeachingClassDetail(request, courseId, departmentId, teachingClassId):
+    """教学班详情（页面）：教师分配（下拉或工号添加）、组成班级展示
+
+    必须从 课程×学院 入口进入；教师分配需要 class:assign_teacher，
+    分配候选来自课程教师池。
+    """
+    cc = get_object_or_404(CourseCollege, course_id=courseId, department_id=departmentId)
+    teachingClass = get_object_or_404(TeachingClass, id=teachingClassId)
+    # 教学班必须属于该课程×学院（404 防跨课程探测）
+    if teachingClass.course_college_id != cc.id:
+        raise Http404('教学班不属于该课程学院')
+
+    def back():
+        """统一跳回本教学班详情页（带课程上下文）"""
+        return redirect('office_teaching_class_detail', courseId=courseId,
+                        departmentId=departmentId, teachingClassId=teachingClassId)
+
+    if request.method == 'POST':
+        action = request.POST.get('action', '')
+        if action in ('addTeacher', 'removeTeacher'):
+            if not hasPerm(request.user, 'class:assign_teacher'):
+                messages.error(request, '没有权限执行该操作')
+                return back()
+            if action == 'addTeacher':
+                # 两种方式：下拉框选教师（teacherId）或直接输工号（teacherNo）
+                teacherNo = request.POST.get('teacherNo', '').strip()
+                if teacherNo:
+                    teacher, errMsg = findTeacherByNo(teacherNo)
+                    if errMsg:
+                        messages.error(request, errMsg)
+                    else:
+                        # 工号添加的教师同时加入本课程教师池
+                        teachingClass.teachers.add(teacher)
+                        cc.teachers.add(teacher)
+                        messages.success(request,
+                            f'已添加教师 {teacher.name or teacher.username}（{teacherNo}）并加入本课程教师池')
+                else:
+                    teacher = get_object_or_404(User, id=request.POST.get('teacherId'))
+                    # 下拉框候选来自教师池，这里再兜底校验一次防止伪造请求
+                    if not cc.teachers.filter(id=teacher.id).exists():
+                        messages.error(request, '该教师不在本课程教师池中，无法分配')
+                    else:
+                        teachingClass.teachers.add(teacher)
+                        messages.success(request,
+                            f'已添加教师 {teacher.name or teacher.username}')
+            else:
+                teacher = get_object_or_404(User, id=request.POST.get('teacherId'))
+                teachingClass.teachers.remove(teacher)
+                messages.success(request,
+                    f'已移除教师 {teacher.name or teacher.username}')
+        else:
+            messages.error(request, '未知操作')
+        return back()
+
+    # 可分配的教师 = 本课程×学院教师池里还没分配到本教学班的
+    availableTeachers = cc.teachers.exclude(
+        id__in=teachingClass.teachers.values('id'))
+    return render(request, 'office/teaching_class_detail.html', {
+        'cc': cc, 'course': cc.course, 'department': cc.department,
+        'teachingClass': teachingClass,
+        'teachers': teachingClass.teachers.all(),
+        'adminClasses': teachingClass.admin_classes.all(),
         'availableTeachers': availableTeachers})

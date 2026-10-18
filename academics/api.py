@@ -1,8 +1,11 @@
-"""教务业务 API：课程、学院、课程×学院、班级、批量导入（前后端分离用）
+"""教务业务 API：学院、课程、课程×学院、行政班、教学班、批量导入（前后端分离用）
 
 每个视图类声明 permCode（所需权限码），由 PermRequired 统一校验；
 写操作再按动作细分权限码，无权限时返回 403。
 权限码与 xmind《用户权限》一一对应。
+
+V2 说明：教师任课挂教学班（不再挂行政班），
+教学班管理（组班/教师分配/解散）统一在 TeachingClass* 视图。
 """
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -10,12 +13,14 @@ from rest_framework.views import APIView
 from users.models import User
 from users.permissions import PermRequired, hasPerm
 
-from .models import Clazz, College, Course, CourseCollege
-from .serializers import (ClazzSerializer, CollegeSerializer, CourseCollegeSerializer,
-                          CourseSerializer, UserBriefSerializer)
-from .views import (findTeacherByNo, importCourses, importStudents,
-                    importStudentsAuto, importTeachers, importTeachersToCourse,
-                    parseXlsxRows, setCourseCollegeLeader, unsetCourseCollegeLeader)
+from .models import AdminClass, Course, CourseCollege, Department, TeachingClass
+from .serializers import (AdminClassSerializer, CourseCollegeSerializer,
+                          CourseSerializer, DepartmentSerializer,
+                          TeachingClassSerializer)
+from .views import (CURRENT_TERM, findTeacherByNo, importCourses,
+                    importStudents, importStudentsAuto, importTeachers,
+                    importTeachersToCourse, parseXlsxRows,
+                    setCourseCollegeLeader, unsetCourseCollegeLeader)
 
 
 def findOr404(modelClass, objectId, name):
@@ -26,14 +31,23 @@ def findOr404(modelClass, objectId, name):
     return obj, None
 
 
-class CollegeListView(APIView):
+def getImportResponse(okList, errList):
+    """统一的导入结果响应：成功数 + 逐行失败原因"""
+    return Response({
+        'successCount': len(okList),
+        'errors': [{'line': lineNo, 'reason': reason}
+                   for lineNo, reason in errList],
+    })
+
+
+class DepartmentListView(APIView):
     """学院列表：需要 course:manage（学院由学号解析自动生成，教务查看用）"""
     permission_classes = [PermRequired]
     permCode = 'course:manage'
 
     def get(self, request):
-        colleges = College.objects.all()
-        return Response(CollegeSerializer(colleges, many=True).data)
+        departments = Department.objects.all()
+        return Response(DepartmentSerializer(departments, many=True).data)
 
 
 class CourseListView(APIView):
@@ -42,7 +56,7 @@ class CourseListView(APIView):
     permCode = 'course:manage'
 
     def get(self, request):
-        courses = Course.objects.all().prefetch_related('course_colleges__college')
+        courses = Course.objects.all().prefetch_related('course_colleges__department')
         return Response(CourseSerializer(courses, many=True).data)
 
 
@@ -65,41 +79,49 @@ class CourseDetailView(APIView):
         if errResp:
             return errResp
         action = request.data.get('action', '')
-        collegeId = request.data.get('collegeId')
-        college, errResp = findOr404(College, collegeId, '学院')
+        departmentId = request.data.get('departmentId')
+        department, errResp = findOr404(Department, departmentId, '学院')
         if errResp:
             return errResp
-        if action == 'addCollege':
-            cc, created = CourseCollege.objects.get_or_create(course=course, college=college)
-            return Response({'message': f'已为课程开设学院 {college.name}'})
-        if action == 'removeCollege':
-            # 删除课程×学院记录，其下的组长、教师池、班级分配一并解除
-            CourseCollege.objects.filter(course=course, college=college).delete()
-            return Response({'message': f'已移除学院 {college.name}'})
+        if action == 'addDepartment':
+            cc, created = CourseCollege.objects.get_or_create(
+                course=course, department=department)
+            return Response({'message': f'已为课程开设学院 {department.name}'})
+        if action == 'removeDepartment':
+            # 先解散该课程×学院下的教学班（course_college 是 PROTECT 外键，
+            # 不先删教学班会抛 ProtectedError），再删课程×学院记录
+            cc = CourseCollege.objects.filter(
+                course=course, department=department).first()
+            if cc is not None:
+                cc.teaching_classes.all().delete()
+                cc.delete()
+            return Response({'message': f'已移除学院 {department.name}'})
         return Response({'error': '未知操作'}, status=400)
 
 
 class CourseCollegeView(APIView):
-    """课程×学院 详情与设置：组长、教师池、班级"""
+    """课程×学院 详情与设置：组长、教师池、行政班"""
     permission_classes = [PermRequired]
     permCode = 'course:manage'
 
-    def get(self, request, courseId, collegeId):
-        cc = CourseCollege.objects.filter(course_id=courseId, college_id=collegeId).first()
+    def get(self, request, courseId, departmentId):
+        cc = CourseCollege.objects.filter(
+            course_id=courseId, department_id=departmentId).first()
         if cc is None:
             return Response({'error': '该课程尚未开设此学院'}, status=404)
         return Response(CourseCollegeSerializer(cc).data)
 
-    def post(self, request, courseId, collegeId):
-        """按动作细分权限码：设组长=user:assign_role、教师/学生导入=class:manage、
-        班级分配=course:assign_class"""
-        cc = CourseCollege.objects.filter(course_id=courseId, college_id=collegeId).first()
+    def post(self, request, courseId, departmentId):
+        """按动作细分权限码：设组长=user:assign_role、班级分配=course:assign_class、
+        教师/学生导入=class:manage"""
+        cc = CourseCollege.objects.filter(
+            course_id=courseId, department_id=departmentId).first()
         if cc is None:
             return Response({'error': '该课程尚未开设此学院'}, status=404)
         action = request.data.get('action', '')
         if action in ('setLeader', 'unsetLeader'):
             needCode = 'user:assign_role'
-        elif action in ('addClazz', 'removeClazz'):
+        elif action in ('addAdminClass', 'removeAdminClass'):
             needCode = 'course:assign_class'
         else:
             needCode = 'class:manage'  # importTeachers / importStudents
@@ -122,106 +144,181 @@ class CourseCollegeView(APIView):
             if not fileObj:
                 return Response({'error': '请上传 xlsx 文件'}, status=400)
             okList, errList = importTeachersToCourse(parseXlsxRows(fileObj), cc)
-            return Response({
-                'successCount': len(okList),
-                'errors': [{'line': lineNo, 'reason': reason} for lineNo, reason in errList],
-            })
-        if action == 'addClazz':
-            clazz, errResp = findOr404(Clazz, request.data.get('clazzId'), '班级')
+            return getImportResponse(okList, errList)
+        if action == 'addAdminClass':
+            adminClass, errResp = findOr404(
+                AdminClass, request.data.get('adminClassId'), '行政班')
             if errResp:
                 return errResp
-            # 只允许添加本学院的班级（服务端兜底校验）
-            if clazz.college_id != cc.college_id:
-                return Response({'error': f'班级 {clazz.name} 不属于该学院'}, status=400)
-            cc.clazzes.add(clazz)
-            return Response({'message': f'已添加班级 {clazz.name}'})
-        if action == 'removeClazz':
-            clazz, errResp = findOr404(Clazz, request.data.get('clazzId'), '班级')
+            # 只允许添加本学院的班级（服务端兜底校验，经专业层判断学院归属）
+            if adminClass.major.department_id != cc.department_id:
+                return Response(
+                    {'error': f'班级 {adminClass.name} 不属于该学院'}, status=400)
+            cc.admin_classes.add(adminClass)
+            return Response({'message': f'已添加班级 {adminClass.name}'})
+        if action == 'removeAdminClass':
+            adminClass, errResp = findOr404(
+                AdminClass, request.data.get('adminClassId'), '行政班')
             if errResp:
                 return errResp
-            cc.clazzes.remove(clazz)
-            return Response({'message': f'已移除班级 {clazz.name}'})
+            cc.admin_classes.remove(adminClass)
+            return Response({'message': f'已移除班级 {adminClass.name}'})
         if action == 'importStudents':
             fileObj = request.FILES.get('file')
             if not fileObj:
                 return Response({'error': '请上传 xlsx 文件'}, status=400)
             okList, errList = importStudentsAuto(parseXlsxRows(fileObj))
-            return Response({
-                'successCount': len(okList),
-                'errors': [{'line': lineNo, 'reason': reason} for lineNo, reason in errList],
-            })
+            return getImportResponse(okList, errList)
         return Response({'error': '未知操作'}, status=400)
 
 
-class ClazzListView(APIView):
-    """班级列表：需要 class:manage（全校班级增删改查）"""
+class AdminClassListView(APIView):
+    """行政班列表：需要 class:manage（全校班级增删改查）"""
     permission_classes = [PermRequired]
     permCode = 'class:manage'
 
     def get(self, request):
-        clazzes = Clazz.objects.all().select_related('college').prefetch_related(
-            'students', 'teachers', 'course_colleges__course')
-        return Response(ClazzSerializer(clazzes, many=True).data)
+        adminClasses = AdminClass.objects.all().select_related(
+            'major__department').prefetch_related('memberships')
+        return Response(AdminClassSerializer(adminClasses, many=True).data)
 
 
-class ClazzDetailView(APIView):
-    """班级详情与教师分配：需要 class:manage；删除班级走 DELETE
-
-    教师下拉候选按课程×学院教师池过滤：
-    - GET 传 ?cc=<courseCollegeId>：返回该课程×学院教师池中未分配到本班的教师（availableTeachers）
-    - POST addTeacher 传 ccId：校验教师必须在池内；工号添加的教师自动加入该池
-    """
+class AdminClassDetailView(APIView):
+    """行政班详情：需要 class:manage；支持导入学生到本班、删除班级"""
     permission_classes = [PermRequired]
     permCode = 'class:manage'
 
-    def get(self, request, clazzId):
-        clazz, errResp = findOr404(Clazz, clazzId, '班级')
+    def get(self, request, adminClassId):
+        adminClass, errResp = findOr404(AdminClass, adminClassId, '行政班')
         if errResp:
             return errResp
-        data = ClazzSerializer(clazz).data
-        # 带课程×学院上下文时，返回教师池中未分配到本班的教师
-        cc = self.getContextCc(request, clazz)
-        if cc is not None:
-            assignedIds = clazz.teachers.values_list('id', flat=True)
-            available = cc.teachers.exclude(id__in=assignedIds)
-            data['availableTeachers'] = UserBriefSerializer(available, many=True).data
-        else:
-            data['availableTeachers'] = []
-        return Response(data)
+        return Response(AdminClassSerializer(adminClass).data)
 
-    def delete(self, request, clazzId):
-        """删除班级：学生和教师账号保留，课程分配解除"""
-        clazz, errResp = findOr404(Clazz, clazzId, '班级')
+    def delete(self, request, adminClassId):
+        """删除行政班：成员关系级联删除，学生账号保留"""
+        adminClass, errResp = findOr404(AdminClass, adminClassId, '行政班')
         if errResp:
             return errResp
-        clazzName = clazz.name
-        clazz.delete()
-        return Response({'message': f'已删除班级 {clazzName}'})
+        adminClassName = adminClass.name
+        adminClass.delete()
+        return Response({'message': f'已删除班级 {adminClassName}'})
 
-    def getContextCc(self, request, clazz):
-        """解析请求中的课程×学院上下文（查询参数 cc 或 body 里的 ccId）
-
-        校验该课程×学院确实包含本班级；无效时返回 None（页面模式已兜底校验）。
-        """
-        ccId = request.query_params.get('cc') or request.data.get('ccId')
-        if not ccId:
-            return None
-        cc = CourseCollege.objects.filter(id=ccId).first()
-        if cc is None or not cc.clazzes.filter(id=clazz.id).exists():
-            return None
-        return cc
-
-    def post(self, request, clazzId):
-        """分配/移除教师或导入学生，按动作细分权限码"""
-        clazz, errResp = findOr404(Clazz, clazzId, '班级')
+    def post(self, request, adminClassId):
+        """导入学生到本班：需要 class:manage"""
+        adminClass, errResp = findOr404(AdminClass, adminClassId, '行政班')
         if errResp:
             return errResp
         action = request.data.get('action', '')
-        cc = self.getContextCc(request, clazz)
+        if action != 'importStudents':
+            return Response({'error': '未知操作'}, status=400)
+        fileObj = request.FILES.get('file')
+        if not fileObj:
+            return Response({'error': '请上传 xlsx 文件'}, status=400)
+        okList, errList = importStudents(parseXlsxRows(fileObj), adminClass)
+        return getImportResponse(okList, errList)
+
+
+class TeachingClassListView(APIView):
+    """教学班列表与组班：列表需要 course:manage；创建需要 course:assign_class
+
+    GET ?cc=<courseCollegeId> 过滤某个课程×学院下的教学班。
+    """
+    permission_classes = [PermRequired]
+    permCode = 'course:manage'
+
+    def get(self, request):
+        teachingClasses = TeachingClass.objects.all()
+        ccId = request.query_params.get('cc')
+        if ccId:
+            teachingClasses = teachingClasses.filter(course_college_id=ccId)
+        return Response(TeachingClassSerializer(teachingClasses, many=True).data)
+
+    def post(self, request):
+        """组教学班：名称 + 课程×学院 + 组成行政班（至少一个），默认继承教师池"""
+        if not hasPerm(request.user, 'course:assign_class'):
+            return Response({'error': '没有权限执行该操作'}, status=403)
+        cc, errResp = findOr404(
+            CourseCollege, request.data.get('courseCollegeId'), '课程×学院')
+        if errResp:
+            return errResp
+        name = str(request.data.get('name', '')).strip()
+        if not name:
+            return Response({'error': '教学班名称不能为空'}, status=400)
+        term = str(request.data.get('term', '')).strip() or CURRENT_TERM
+        # 组成班级必须都属于该课程×学院（服务端兜底，防伪造请求）
+        adminClassIds = list(request.data.get('adminClassIds', []))
+        adminClasses = AdminClass.objects.filter(
+            id__in=adminClassIds, course_colleges=cc)
+        if not adminClasses or len(adminClasses) != len(set(adminClassIds)):
+            return Response(
+                {'error': '组成班级无效，至少选择一个本课程的行政班'}, status=400)
+        if TeachingClass.objects.filter(
+                course_college=cc, term=term, name=name).exists():
+            return Response({'error': f'同学期已存在同名教学班 {name}'}, status=400)
+        teachingClass = TeachingClass.objects.create(
+            name=name, term=term, course_college=cc)
+        teachingClass.admin_classes.set(adminClasses)
+        # 新教学班默认继承课程教师池（与批量导入教师的自动分配行为一致）
+        teachingClass.teachers.set(cc.teachers.all())
+        return Response(TeachingClassSerializer(teachingClass).data, status=201)
+
+
+class TeachingClassDetailView(APIView):
+    """教学班详情与设置：GET 详情；POST 动作管理组成班级/教师；DELETE 解散"""
+    permission_classes = [PermRequired]
+    permCode = 'course:manage'
+
+    def get(self, request, teachingClassId):
+        teachingClass, errResp = findOr404(
+            TeachingClass, teachingClassId, '教学班')
+        if errResp:
+            return errResp
+        return Response(TeachingClassSerializer(teachingClass).data)
+
+    def delete(self, request, teachingClassId):
+        """解散教学班：组成班级、教师、学生数据都保留（教学班是授课组织）"""
+        if not hasPerm(request.user, 'class:manage'):
+            return Response({'error': '没有权限执行该操作'}, status=403)
+        teachingClass, errResp = findOr404(
+            TeachingClass, teachingClassId, '教学班')
+        if errResp:
+            return errResp
+        teachingClassName = teachingClass.name
+        teachingClass.delete()
+        return Response({'message': f'已解散教学班 {teachingClassName}'})
+
+    def post(self, request, teachingClassId):
+        teachingClass, errResp = findOr404(
+            TeachingClass, teachingClassId, '教学班')
+        if errResp:
+            return errResp
+        action = request.data.get('action', '')
+        if action in ('addAdminClass', 'removeAdminClass'):
+            # 组班调整属于班级分配：course:assign_class
+            if not hasPerm(request.user, 'course:assign_class'):
+                return Response({'error': '没有权限执行该操作'}, status=403)
+            adminClass, errResp = findOr404(
+                AdminClass, request.data.get('adminClassId'), '行政班')
+            if errResp:
+                return errResp
+            cc = teachingClass.course_college
+            if action == 'addAdminClass':
+                # 只能添加本课程×学院候选池里的班级（服务端兜底）
+                if not cc.admin_classes.filter(id=adminClass.id).exists():
+                    return Response(
+                        {'error': f'班级 {adminClass.name} 不在本课程×学院中'}, status=400)
+                teachingClass.admin_classes.add(adminClass)
+                return Response({'message': f'已添加班级 {adminClass.name}'})
+            # removeAdminClass：教学班至少保留一个组成班级
+            if teachingClass.admin_classes.count() <= 1:
+                return Response({'error': '教学班至少保留一个组成班级'}, status=400)
+            teachingClass.admin_classes.remove(adminClass)
+            return Response({'message': f'已移除班级 {adminClass.name}'})
         if action in ('addTeacher', 'removeTeacher'):
             # 分配教师：需要 class:assign_teacher
             if not hasPerm(request.user, 'class:assign_teacher'):
                 return Response({'error': '没有权限执行该操作'}, status=403)
+            cc = teachingClass.course_college
             if action == 'addTeacher':
                 # 两种方式：下拉框选教师（teacherId）或直接输工号（teacherNo）
                 teacherNo = str(request.data.get('teacherNo', '')).strip()
@@ -230,33 +327,26 @@ class ClazzDetailView(APIView):
                     if errMsg:
                         return Response({'error': errMsg}, status=400)
                     # 工号添加的教师自动加入本课程教师池
-                    if cc is not None:
-                        cc.teachers.add(teacher)
+                    cc.teachers.add(teacher)
                 else:
-                    teacher = User.objects.filter(id=request.data.get('teacherId')).first()
+                    teacher = User.objects.filter(
+                        id=request.data.get('teacherId')).first()
                     if teacher is None:
                         return Response({'error': '教师不存在'}, status=400)
                     # 带课程上下文时，教师必须在池内（防伪造请求）
-                    if cc is not None and not cc.teachers.filter(id=teacher.id).exists():
-                        return Response({'error': '该教师不在本课程教师池中'}, status=400)
-                clazz.teachers.add(teacher)
-                return Response({'message': f'已添加教师 {teacher.name or teacher.username}'})
-            teacher = User.objects.filter(id=request.data.get('teacherId')).first()
+                    if not cc.teachers.filter(id=teacher.id).exists():
+                        return Response(
+                            {'error': '该教师不在本课程教师池中'}, status=400)
+                teachingClass.teachers.add(teacher)
+                return Response(
+                    {'message': f'已添加教师 {teacher.name or teacher.username}'})
+            teacher = User.objects.filter(
+                id=request.data.get('teacherId')).first()
             if teacher is None:
                 return Response({'error': '教师不存在'}, status=400)
-            clazz.teachers.remove(teacher)
-            return Response({'message': f'已移除教师 {teacher.name or teacher.username}'})
-        if action == 'importStudents':
-            # 导入学生属于班级管理：class:manage
-            fileObj = request.FILES.get('file')
-            if not fileObj:
-                return Response({'error': '请上传 xlsx 文件'}, status=400)
-            rows = parseXlsxRows(fileObj)
-            okList, errList = importStudents(rows, clazz)
-            return Response({
-                'successCount': len(okList),
-                'errors': [{'line': lineNo, 'reason': reason} for lineNo, reason in errList],
-            })
+            teachingClass.teachers.remove(teacher)
+            return Response(
+                {'message': f'已移除教师 {teacher.name or teacher.username}'})
         return Response({'error': '未知操作'}, status=400)
 
 
@@ -265,7 +355,7 @@ class ImportView(APIView):
 
     基础门槛 class:manage；按导入内容细分：
     导入课程 -> course:manage，导入教师/学生 -> class:manage；
-    学生导入按学号格式自动分配学院和班级，不再需要目标班级参数。
+    学生导入按学号格式自动分配学院、专业和班级，不再需要目标班级参数。
     """
     permission_classes = [PermRequired]
     permCode = 'class:manage'
@@ -287,7 +377,4 @@ class ImportView(APIView):
             okList, errList = importStudentsAuto(rows)
         else:
             return Response({'error': '未知导入类型'}, status=400)
-        return Response({
-            'successCount': len(okList),
-            'errors': [{'line': lineNo, 'reason': reason} for lineNo, reason in errList],
-        })
+        return getImportResponse(okList, errList)
