@@ -610,11 +610,11 @@ OJ_RUN_TIMEOUT = 30   # 单次判题 HTTP 超时（秒）
 
 ## 十九、待办（随批次实现）
 
-- [ ] `teaching/judge.py` 判题客户端封装（submitRun / uploadFile / deleteFile / 状态映射）
+- [x] `teaching/judge.py` 判题客户端封装（submitRun / uploadFile / deleteFile / 状态映射）
 - [ ] 沙箱镜像语言实测并冻结部署契约：python / gcc 版本、标准库、绝对路径（当前仅实测 /bin/sh）
-- [ ] 答案比对器（三策略精确定义版）
-- [ ] markdown 解析器（代码块 → 题目数据 + statement_md 重建 + points）
-- [ ] JudgeTask 租约状态机 + 补投/回收定时任务
+- [x] 答案比对器（三策略精确定义版）
+- [x] markdown 解析器（代码块 → 题目数据 + statement_md 重建 + points）
+- [x] JudgeTask 租约状态机 + 补投/回收定时任务
 - [ ] nginx 限源与 /config 收敛（部署侧）
 - [ ] 跨用户抄袭检测（二期）
 - [ ] exam 考试模式（二期）：限时锁定、交卷封存
@@ -653,3 +653,10 @@ v1 经外部设计审查（P0×5 / P1×14 / P2×8），本版修订：
 - **沙箱错误重试语义精确化**：用户程序/编译遇 File Error 或 Internal Error（客户端已重试 1 次）→ 任务层转瞬时异常 → 租约回退 retryable（清 file_id + 清理产物）→ 抛给 q2 按 retry=1000s 重投；checker 故障（spj 沙箱级错误）→ 任务内重试 1 次 → 仍失败置 system_error（≠ 用户 WA，不消耗 q2 重试额度）
 - **attempt 执行次数公式**：8.1 回收与领取两处均 attempt_id+1（回收 +1 作废令牌、领取 +1 建立新租约），执行次数 = (attempt_id + 1) // 2；claimLease 后该值 > max_attempts(2) → 直接 failed + system_error（重试上限闸集中在任务入口一处）
 - **spj 判题形态补全**：argv = ["python3", "checker.py", "input.txt", "user_out.txt", "expected.txt"]（Python 的 sys.argv 视角与 11 章示例 sys.argv[2]=user_out 一致）；checker 非 Accepted 一律按故障处理（含 TLE/MLE/RE，防 checker 自身问题冤枉学生）
+
+### v7（2026-10-18，M6 markdown 录题落地修订）
+
+- **解析器实现口径**（`teaching/problem_markdown.py`）：逐行状态机提取受保护块（input-sample/output-sample/input/output/spj-python），普通代码块原样保留进正文；未闭合围栏 400；points 仅接受 1~100 整数，未标注点平分 100（余数补给前几个未标注点，标注点保持标注值——教师自行保证总和语义）；标题取第一个一级标题行并在重建正文时剔除；md 总上限 6MB、隐藏测试点/样例各上限 20 组、单组数据 256KB；spj 入库前 ast.parse 语法校验
+- **题库两级归属 API 落地**（12.1/12.3）：教师列表 = 公共题库 + 本人个人题（分页 20，按 updated_at 倒序）；建题端点决定归属——`POST /api/teacher/problems/` 个人题（homework:bank）、`POST /api/teacher/public-problems/` 公共题（question_bank:manage），请求体 isPublic 一律无效；`GET/PUT/DELETE /api/teacher/problems/<id>/` 不设统一 permCode，由服务层 `getManageableProblem` 对象级判 403（无任何题库权限）/404（无权限或非本人个人题，防探测）
+- **学生题面端点**（12.2）：`GET /api/problems/<id>/`（homework:view），不按 is_public 过滤——作业里引用的教师个人题学生要能读；白名单仅 title/statementMd/samples/languages，不含 tests/spj_code/tier/compareStrategy
+- **编辑语义冻结**（决策 d）：编辑 = 重传完整 md 全文替换（与建题同一条解析校验链），成功后 revision+1；已受理提交用快照判题不受影响（7.3）；解析失败 400 且原题不动（先解析后落库）

@@ -33,4 +33,6 @@ urlpatterns = [
     path('api/teacher/', include('teaching.api_urls')),
     # 挂载学生提交 API（提交受理 + 查询，权限码 homework:view）
     path('api/', include('teaching.submission_urls')),
+    # 挂载学生题面 API（读题详情，权限码 homework:view）
+    path('api/', include('teaching.problem_urls')),
 ]

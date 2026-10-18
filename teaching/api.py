@@ -5,6 +5,7 @@
 - 详情接口先过 getTeacherTeachingClass 对象级校验，非本班教师一律 404
 - 后续功能接口（通知/作业等）都必须沿用这套校验
 """
+from django.db.models import Q
 from django.http import Http404
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.views import APIView
@@ -12,11 +13,15 @@ from rest_framework.response import Response
 
 from academics.models import TeachingClass
 from academics.serializers import TeachingClassSerializer
-from teaching.models import Submission
+from teaching.models import Problem, Submission
 from users.permissions import IsTeacherGroup, PermRequired
 
 from .helpers import getTeacherTeachingClass
-from .serializers import (SubmissionDetailSerializer,
+from .problem_service import (createProblem, getManageableProblem,
+                              updateProblem)
+from .serializers import (ProblemDetailSerializer, ProblemListSerializer,
+                          ProblemStudentSerializer,
+                          SubmissionDetailSerializer,
                           SubmissionListSerializer,
                           TeacherTeachingClassSerializer)
 from .submission_service import submitSolution
@@ -83,6 +88,93 @@ class SubmissionDetailView(APIView):
                 or submission.user_id == request.user.id):
             raise Http404('提交不存在')
         return Response(SubmissionDetailSerializer(submission).data)
+
+
+class ProblemPagination(PageNumberPagination):
+    """题库列表分页：固定每页 20（12.1 约定）"""
+    page_size = 20
+
+
+class TeacherProblemListCreateView(APIView):
+    """教师题库列表与录题：GET/POST /api/teacher/problems/
+
+    GET：题库列表 = 公共题库 + 本人个人题（12.1），按更新时间倒序，
+    分页 20/页。权限码：homework:bank（教师）。
+    POST：新建个人题（is_public=False，归属由端点决定 12.3）。
+    """
+    permission_classes = [PermRequired]
+    permCode = 'homework:bank'
+
+    def get(self, request):
+        queryset = Problem.objects.filter(
+            Q(is_public=True) | Q(owner=request.user)
+        ).order_by('-updated_at')
+        paginator = ProblemPagination()
+        page = paginator.paginate_queryset(queryset, request)
+        serializer = ProblemListSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+    def post(self, request):
+        problem = createProblem(request.user, request.data, isPublic=False)
+        return Response(ProblemDetailSerializer(problem).data)
+
+
+class PublicProblemCreateView(APIView):
+    """公共题库录题：POST /api/teacher/public-problems/
+
+    权限码：question_bank:manage（课程组；教师无此码 → 403）。
+    is_public=True 由端点决定，请求体 isPublic 一律无效（12.3）。
+    """
+    permission_classes = [PermRequired]
+    permCode = 'question_bank:manage'
+
+    def post(self, request):
+        problem = createProblem(request.user, request.data, isPublic=True)
+        return Response(ProblemDetailSerializer(problem).data)
+
+
+class TeacherProblemDetailView(APIView):
+    """题库题目详情/编辑/删除：GET/PUT/DELETE /api/teacher/problems/<id>/
+
+    不设 permCode：教师与课程组权限码不同（homework:bank vs
+    question_bank:manage），对象级由 getManageableProblem 统一判
+    403/404（12.2，防探测）。
+    GET 返回含 statement_md/samples 的详情，不含 tests/spj_code（6.2）。
+    PUT = 重传完整 md 全文替换，revision+1（决策 d）。
+    DELETE 删除题目（已有提交用快照判题，不受影响）。
+    """
+    permission_classes = [PermRequired]
+
+    def get(self, request, problemId):
+        problem = getManageableProblem(request.user, problemId)
+        return Response(ProblemDetailSerializer(problem).data)
+
+    def put(self, request, problemId):
+        problem = getManageableProblem(request.user, problemId)
+        problem = updateProblem(problem, request.data)
+        return Response(ProblemDetailSerializer(problem).data)
+
+    def delete(self, request, problemId):
+        problem = getManageableProblem(request.user, problemId)
+        problem.delete()
+        return Response(status=204)
+
+
+class StudentProblemDetailView(APIView):
+    """学生题面详情：GET /api/problems/<id>/
+
+    权限码：homework:view。不按 is_public 过滤——作业里引用的教师
+    个人题学生必须能读（12.1）。返回题面 + 公开样例 + 支持语言；
+    永不含 tests/spj_code/判题内部配置（6.2）。
+    """
+    permission_classes = [PermRequired]
+    permCode = 'homework:view'
+
+    def get(self, request, problemId):
+        problem = Problem.objects.filter(pk=problemId).first()
+        if problem is None:
+            raise Http404('题目不存在')
+        return Response(ProblemStudentSerializer(problem).data)
 
 
 class TeacherTeachingClassListView(APIView):

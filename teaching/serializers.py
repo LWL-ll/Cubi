@@ -68,3 +68,57 @@ class SubmissionDetailSerializer(SubmissionListSerializer):
     """
     code = serializers.CharField(read_only=True)
     repeatOfId = serializers.IntegerField(source='repeat_of_id', read_only=True)
+
+
+class ProblemListSerializer(serializers.Serializer):
+    """教师题库列表项（白名单：不含 tests/spj_code/statement_md）
+
+    保密链（OJ对接设计.md 14.7）：测试点数据与 spj 源码只存在于服务端
+    判题链路，任何列表接口一律不含这些字段。
+    """
+    id = serializers.IntegerField(read_only=True)
+    title = serializers.CharField(read_only=True)
+    tier = serializers.CharField(read_only=True)
+    compareStrategy = serializers.CharField(source='compare_strategy',
+                                            read_only=True)
+    languages = serializers.JSONField(read_only=True)
+    hasSpj = serializers.BooleanField(source='has_spj', read_only=True)
+    isPublic = serializers.BooleanField(source='is_public', read_only=True)
+    revision = serializers.IntegerField(read_only=True)
+    ownerName = serializers.SerializerMethodField()
+    sampleCount = serializers.SerializerMethodField()
+    testCount = serializers.SerializerMethodField()
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
+
+    def get_ownerName(self, obj):
+        """归属展示：公共题显示课程组，个人题显示教师姓名（owner 可能已删号）"""
+        if obj.is_public:
+            return '公共题库'
+        return obj.owner.get_full_name() or obj.owner.username \
+            if obj.owner else '（教师已删除）'
+
+    def get_sampleCount(self, obj):
+        return len(obj.samples or [])
+
+    def get_testCount(self, obj):
+        return len(obj.tests or [])
+
+
+class ProblemDetailSerializer(ProblemListSerializer):
+    """教师题目详情：列表字段 + 题面与公开样例（仍不含 tests/spj_code）"""
+    statementMd = serializers.CharField(source='statement_md', read_only=True)
+    samples = serializers.JSONField(read_only=True)
+
+
+class ProblemStudentSerializer(serializers.Serializer):
+    """学生题面详情（homework:view）：只给读题所需字段
+
+    白名单：title/statement_md/samples/languages——不含 tests、spj_code、
+    tier/compare_strategy 等判题内部配置（6.2 不可变边界）。
+    """
+    id = serializers.IntegerField(read_only=True)
+    title = serializers.CharField(read_only=True)
+    statementMd = serializers.CharField(source='statement_md', read_only=True)
+    samples = serializers.JSONField(read_only=True)
+    languages = serializers.JSONField(read_only=True)

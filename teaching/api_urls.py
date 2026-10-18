@@ -1,11 +1,18 @@
 """教师工作台 API 路由（挂在 /api/teacher/ 前缀下）"""
 from django.urls import path
 
-from .api import TeacherTeachingClassDetailView, TeacherTeachingClassListView
+from .api import (PublicProblemCreateView, TeacherProblemDetailView,
+                  TeacherProblemListCreateView, TeacherTeachingClassDetailView,
+                  TeacherTeachingClassListView)
 
 urlpatterns = [
     # 我的教学班级
     path('teaching-classes/', TeacherTeachingClassListView.as_view()),
     path('teaching-classes/<int:teachingClassId>/',
          TeacherTeachingClassDetailView.as_view()),
+    # 题库（个人题 + 公共题库，12.1）
+    path('problems/', TeacherProblemListCreateView.as_view()),
+    path('problems/<int:problemId>/', TeacherProblemDetailView.as_view()),
+    # 公共题库录题（课程组专用，12.3）
+    path('public-problems/', PublicProblemCreateView.as_view()),
 ]
