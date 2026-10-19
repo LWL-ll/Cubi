@@ -126,7 +126,7 @@ go-judge 云沙箱（https，独立部署，nginx 限源）
 | compare_strategy | 比对策略 exact / trailing / loose |
 | has_spj / spj_code | 特殊判定开关 + checker 源码（Python） |
 | revision | 修订号，每次改题 +1 |
-| owner / is_public | 题库两级归属：公共题库（is_public=True，课程组管）/ 教师个人题库 |
+| owner / is_public | 题库归属：公共题库（is_public=True，系统管理员导入/维护，教师只读选题）/ 教师个人题库 |
 
 ### 3.2 Submission（提交）
 

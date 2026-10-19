@@ -341,12 +341,12 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 
 ## 五、附录
 
-### 5.1 权限码总表（23 个）
+### 5.1 权限码总表（22 个）
 
 | 角色 | 权限码 | 中文名 |
 |---|---|---|
 | 教务 | class:manage / class:assign_teacher / course:manage / course:assign_class / user:assign_role | 班级管理 / 分配教师 / 课程管理 / 分配班级 / 指定组长 |
-| 课程组 | knowledge:manage / material:class_visible / question_bank:manage / chapter:manage | AI Agent知识库 / 课程下班级资料 / 作业题库 / 课程章节设计 |
+| 课程组 | knowledge:manage / material:class_visible / chapter:manage | AI Agent知识库 / 课程下班级资料 / 课程章节设计 |
 | 教师 | notice:manage / analysis:view / material:class_manage / homework:publish / homework:bank / homework:remind / homework:comment / homework:answer / homework:ai | 班级通知 / 学情分析 / 班级内部资料 / 作业发布 / 个人题库 / 作业提醒 / 评语 / 答案 / Agent分析 |
 | 学生 | homework:view / notice:view / material:view / analysis:view_self | 作业查看与提交 / 查看班级通知 / 查看班级资料 / 查看自己的学生画像 |
 | 通用 | profile:edit | 修改个人资料 |

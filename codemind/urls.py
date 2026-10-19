@@ -31,6 +31,8 @@ urlpatterns = [
     path('api/', include('academics.api_urls')),
     # 挂载教师工作台 API 路由（我的教学班级）
     path('api/teacher/', include('teaching.api_urls')),
+    # 挂载管理员 API 路由（题库批量导入，仅超级用户）
+    path('api/admin/', include('teaching.admin_api_urls')),
     # 挂载学生提交 API（提交受理 + 查询，权限码 homework:view）
     path('api/', include('teaching.submission_urls')),
     # 挂载学生题面 API（读题详情，权限码 homework:view）

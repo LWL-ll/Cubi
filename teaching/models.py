@@ -24,8 +24,8 @@ from academics.models import TeachingClass
 class Problem(models.Model):
     """题目：题面 markdown + 测试用例 JSON + 可选 spj
 
-    题库两级归属（docs/OJ对接设计.md 12.1）：
-    - is_public=True：课程组公共题库（question_bank:manage 管理）
+    题库归属（docs/OJ对接设计.md 12.1，2026-10-20 调整）：
+    - is_public=True：公共题库（系统管理员导入/维护，全平台教师只读选题）
     - is_public=False：教师个人题库（homework:bank 管理，owner 为教师本人）
     """
 
@@ -73,6 +73,12 @@ class Problem(models.Model):
                               null=True, verbose_name='归属教师',
                               related_name='owned_problems')
     is_public = models.BooleanField('公共题库', default=False)
+    # 批量导入溯源：source_code 是清单里的稳定编号（个人题/手工题为空），
+    # source_hash 是 markdown 原文 SHA256，重复导入时据此判断内容是否变化。
+    # unique=True + null=True：SQLite/MySQL 都允许多个 NULL，个人题互不冲突。
+    source_code = models.CharField('导入编号', max_length=128, null=True,
+                                   blank=True, unique=True)
+    source_hash = models.CharField('源文件哈希', max_length=64, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 

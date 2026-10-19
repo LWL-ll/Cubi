@@ -42,12 +42,33 @@
                         <label class="form-label small text-secondary">
                             选题（公共题库 + 我的个人题，最多 20 道；点击勾选，顺序即题序）
                         </label>
+                        <div class="row g-2 mb-2">
+                            <div class="col-md-7">
+                                <input type="text" id="pickerSearch"
+                                       class="form-control form-control-sm"
+                                       placeholder="搜索题目标题（回车搜索）">
+                            </div>
+                            <div class="col-md-3">
+                                <select id="pickerTier" class="form-select form-select-sm">
+                                    <option value="">全部档位</option>
+                                    <option value="beginner">入门</option>
+                                    <option value="basic">基础</option>
+                                    <option value="advanced">进阶</option>
+                                </select>
+                            </div>
+                            <div class="col-md-2">
+                                <button type="button" class="btn btn-outline-primary btn-sm w-100"
+                                        onclick="resetPicker()">搜索</button>
+                            </div>
+                        </div>
+                        <div id="selectedProblems" class="mb-2"></div>
                         <div id="problemPicker" class="border rounded p-2"
                              style="max-height: 320px; overflow-y: auto;">
                             <div class="text-center text-secondary py-2">加载题库中…</div>
                         </div>
                         <div class="small text-secondary mt-1">
                             已选 <span id="selectedCount" class="fw-bold text-primary">0</span> 道
+                            （最多 20 道）
                         </div>
                     </div>
                 </div>
@@ -65,8 +86,10 @@
 const TEACHING_CLASS_ID = {{ teachingClass.id }};
 const MAX_PROBLEMS = 20;          // 与后端 12.4 上限一致
 
-// 题库缓存：id -> 题目（选题面板渲染用）
+// 题库缓存：problemBank 是当前加载页；selectedProblems 跨页保留已选题目
 let problemBank = [];
+let problemPageNextUrl = null;
+let selectedProblems = new Map();
 let createModalInstance = null;
 
 // HTML 转义：题目标题/作业标题来自用户输入，一律转义防 XSS
@@ -115,58 +138,137 @@ async function deleteHomework(homeworkId) {
     alert(data.detail || '删除失败：' + res.status);
 }
 
+function buildPickerUrl() {
+    const params = new URLSearchParams();
+    const keyword = document.getElementById('pickerSearch').value.trim();
+    const tier = document.getElementById('pickerTier').value;
+    params.set('scope', 'all');
+    if (keyword) params.set('q', keyword);
+    if (tier) params.set('tier', tier);
+    return '/api/teacher/problems/?' + params.toString();
+}
+
+async function loadPickerPage(url, replace = false) {
+    const res = await fetch(url);
+    if (!res.ok) {
+        document.getElementById('problemPicker').textContent = '题库加载失败';
+        return;
+    }
+    const data = await res.json();
+    if (replace) {
+        problemBank = data.results;
+    } else {
+        // 追加时按 id 去重，避免翻页期间题目更新导致顺序漂移重复
+        const merged = new Map(problemBank.map(item => [item.id, item]));
+        data.results.forEach(item => merged.set(item.id, item));
+        problemBank = Array.from(merged.values());
+    }
+    problemPageNextUrl = data.next;
+    renderPicker();
+}
+
+function loadMorePicker() {
+    if (problemPageNextUrl) loadPickerPage(problemPageNextUrl);
+}
+
 async function openCreateModal() {
-    // 打开前重置表单 + 拉取题库
+    // 打开前重置表单与选题状态（已选题目在本次组卷内跨页保留）
     document.getElementById('hwTitle').value = '';
     document.getElementById('hwStartAt').value = '';
     document.getElementById('hwDeadline').value = '';
     document.getElementById('createError').classList.add('d-none');
-    renderPicker([]);
+    document.getElementById('pickerSearch').value = '';
+    document.getElementById('pickerTier').value = '';
+    selectedProblems = new Map();
+    problemBank = [];
+    problemPageNextUrl = null;
+    document.getElementById('selectedProblems').innerHTML = '';
     document.getElementById('selectedCount').textContent = '0';
-    const res = await fetch('/api/teacher/problems/');
-    problemBank = res.ok ? (await res.json()).results : [];
-    renderPicker([]);
+    document.getElementById('problemPicker').textContent = '加载题库中…';
+    await loadPickerPage(buildPickerUrl(), true);
     createModalInstance = new bootstrap.Modal(document.getElementById('createModal'));
     createModalInstance.show();
 }
 
-function renderPicker(selectedIds) {
+function resetPicker() {
+    problemBank = [];
+    problemPageNextUrl = null;
+    document.getElementById('problemPicker').textContent = '加载中…';
+    loadPickerPage(buildPickerUrl(), true);
+}
+
+function renderPicker() {
     const picker = document.getElementById('problemPicker');
     if (!problemBank.length) {
-        picker.innerHTML = '<div class="text-center text-secondary py-2">题库为空，请先到「作业题库」录入题目</div>';
+        picker.innerHTML = '<div class="text-center text-secondary py-2">没有符合条件的题目，请调整搜索条件</div>';
         return;
     }
     picker.innerHTML = problemBank.map(problem => {
-        const checked = selectedIds.includes(problem.id);
+        const checked = selectedProblems.has(problem.id);
         const publicBadge = problem.isPublic
             ? '<span class="badge text-bg-info ms-1">公共</span>' : '';
         return `
         <div class="form-check text-start py-1 border-bottom">
             <input class="form-check-input" type="checkbox"
                    id="pick-${problem.id}" data-id="${problem.id}"
-                   onchange="togglePick(${problem.id})" ${checked ? 'checked' : ''}>
+                   onchange="togglePick(${problem.id}, this.checked)" ${checked ? 'checked' : ''}>
             <label class="form-check-label small" for="pick-${problem.id}">
                 ${esc(problem.title)}${publicBadge}
                 <span class="text-secondary">· ${esc(problem.tier)} · ${problem.languages.join('/')}</span>
             </label>
         </div>`;
     }).join('');
+    if (problemPageNextUrl) {
+        picker.innerHTML += `<button type="button"
+            class="btn btn-outline-secondary btn-sm w-100 mt-2"
+            onclick="loadMorePicker()">加载更多</button>`;
+    }
+}
+
+function renderSelectedProblems() {
+    const container = document.getElementById('selectedProblems');
+    if (!selectedProblems.size) {
+        container.innerHTML = '';
+        return;
+    }
+    container.innerHTML = Array.from(selectedProblems.values()).map(problem => `
+        <span class="badge text-bg-primary me-1 mb-1">
+            ${esc(problem.title)}
+            <a href="#" class="text-white text-decoration-none ms-1"
+               onclick="removePick(${problem.id}); return false;">×</a>
+        </span>`).join('');
+}
+
+function updateSelectedCount() {
+    document.getElementById('selectedCount').textContent = String(selectedProblems.size);
+}
+
+function togglePick(problemId, checked) {
+    if (checked) {
+        if (selectedProblems.size >= MAX_PROBLEMS) {
+            alert(`单份作业最多 ${MAX_PROBLEMS} 道题`);
+            renderPicker();  // 重新渲染以取消本次勾选
+            return;
+        }
+        const problem = problemBank.find(item => item.id === problemId);
+        if (problem) selectedProblems.set(problemId, problem);
+    } else {
+        selectedProblems.delete(problemId);
+    }
+    renderSelectedProblems();
+    updateSelectedCount();
+}
+
+function removePick(problemId) {
+    selectedProblems.delete(problemId);
+    renderSelectedProblems();
+    updateSelectedCount();
+    renderPicker();
 }
 
 function getSelectedIds() {
-    // 按题目在题库中的展示顺序收集（顺序即题序）
-    return problemBank.filter(p => document.getElementById('pick-' + p.id)?.checked)
-        .map(p => p.id);
-}
-
-function togglePick() {
-    const selectedIds = getSelectedIds();
-    if (selectedIds.length > MAX_PROBLEMS) {
-        alert(`单份作业最多 ${MAX_PROBLEMS} 道题`);
-        renderPicker(selectedIds.slice(0, MAX_PROBLEMS));
-        return;
-    }
-    document.getElementById('selectedCount').textContent = selectedIds.length;
+    // Map 保持插入顺序，顺序即题序（跨分页也保留）
+    return Array.from(selectedProblems.keys());
 }
 
 async function submitHomework() {
@@ -202,6 +304,13 @@ async function submitHomework() {
     errorBox.textContent = data.detail || ('创建失败：' + res.status);
     errorBox.classList.remove('d-none');
 }
+
+document.getElementById('pickerSearch').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        resetPicker();
+    }
+});
 
 loadHomeworks();
 </script>

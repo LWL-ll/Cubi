@@ -93,11 +93,12 @@ def renderTeacherTeachingClassDetail(request, teachingClassId):
 def renderTeacherQuestionBank(request):
     """教师题库页：公共题库 + 本人个人题（M7 实装，数据走题库 API）
 
-    课程组标识传给模板：课程组账号额外显示「新建公共题」入口
-    （服务端仍以权限码为最终防线，前端只影响体验）。
+    公共题库自 2026-10-20 起由系统管理员独占维护，普通教师只读；
+    模板按 canManagePublic 决定是否显示公共题的新建/编辑入口
+    （服务端仍以权限为最终防线，前端只影响体验）。
     """
     return render(request, 'teaching/question_bank.html', {
-        'isCourseTeam': hasPerm(request.user, 'question_bank:manage'),
+        'canManagePublic': request.user.is_superuser,
     })
 
 

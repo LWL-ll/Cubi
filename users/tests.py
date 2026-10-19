@@ -159,7 +159,7 @@ class PermissionMatrixTests(TestCase):
         expectStudent = {'homework:view', 'notice:view', 'material:view',
                          'analysis:view_self', 'profile:edit'}
         expectCourseTeam = {'knowledge:manage', 'material:class_visible',
-                            'question_bank:manage', 'chapter:manage', 'profile:edit'}
+                            'chapter:manage', 'profile:edit'}
         self.assertEqual(set(self._apiClient('T9001').get('/api/auth/me/').json()['permCodes']),
                          expectTeacher)
         self.assertEqual(set(self._apiClient('A9001').get('/api/auth/me/').json()['permCodes']),

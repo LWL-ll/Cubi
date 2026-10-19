@@ -158,7 +158,7 @@ go-judge 的 `status` 为**原始带空格字面量**，共 9 种。**客户端�
 | 3 | 判题执行 | 编译 1 次 `copyOutCached` 产物复用；**全测试点执行聚合部分分**（不再提前终止）；三档资源限制显式携带 |
 | 4 | 数据模型 | Problem / Homework / Submission / JudgeTask 四张表 + Homework–Problem 中间表；题目快照（revision）随提交冻结；测试用例 DB JSON 永不下发 |
 | 5 | 一期范围 | practice + homework（exam 留枚举位）；**SPJ 一期做**（Python + 部分分协议）；交互题/跨用户查重/考试模式二期 |
-| 6 | 录题方式 | 教师端单 markdown 文件（题面+样例+测试点+分值+spj）；课程组公共题库 / 教师个人题库分级 |
+| 6 | 录题方式 | 系统管理员 ZIP 批量导入公共题库（题面+样例+测试点+分值+spj）；教师个人题库仍可单题 markdown 录入 |
 | 7 | 权限码 | **全部复用现有 23 码**（users/models.py Meta.permissions，零新增） |
 | 8 | 查询 API | 学生提交历史；教师教学班聚合 + 成绩导出 xlsx |
 | 9 | 安全红线 | 测试点/预期输出/他人代码/SPJ 输出永不下发；`statement_md` 为剔除受保护代码块后重建的正文；日志禁记测试数据 |
@@ -504,7 +504,7 @@ POST /run 跑 spj：
 
 | 角色 | 权限码 | 能力 |
 |---|---|---|
-| 课程组 | `question_bank:manage` | **公共题库** CRUD（is_public=True），全平台教师可用 |
+| 系统管理员 | （superuser 直通） | **公共题库**导入/增删改（is_public=True），全平台教师只读选题 |
 | 教师 | `homework:bank` | **个人题库** CRUD（is_public=False），仅自己执教的班级可用 |
 | 教师 | `homework:publish` | 从公共 + 个人题库选题 → 组 Homework 挂教学班 |
 | 教师 | `analysis:view` | 教学班提交聚合与成绩导出 |
@@ -517,16 +517,17 @@ POST /run 跑 spj：
 - 代码原文访问：学生仅自己的 code；教师仅自己教学班学生的 code（对象级 404 语义）
 - 学生可见字段白名单：code 原文、自己的 score/time_used 等本人字段；**不含**测试点数据、预期输出、spj 输出、他人提交
 
-### 12.3 录题端点与归属（M6 落地）
+### 12.3 录题端点与归属（M6 落地，2026-10-20 权限调整）
 
-- 建题端点决定归属，请求体 isPublic 一律无效：`POST /api/teacher/problems/`（个人题，homework:bank）、`POST /api/teacher/public-problems/`（公共题，question_bank:manage）
-- 教师题库列表 = 公共题库 + 本人个人题（分页 20）；`GET/PUT/DELETE /api/teacher/problems/<id>/` 由服务层对象级判 403/404（教师与课程组权限码不同）
+- 建题端点决定归属，请求体 isPublic 一律无效：`POST /api/teacher/problems/`（个人题，homework:bank）、`POST /api/teacher/public-problems/`（公共题，仅超级用户）
+- 教师题库列表 = 公共题库 + 本人个人题（分页 20，支持 q/tier/scope 筛选）；`GET /api/teacher/problems/<id>/` 教师可读公共题与本人个人题，`PUT/DELETE` 公共题仅超级用户
 - 学生题面：`GET /api/problems/<id>/`（homework:view），不按 is_public 过滤（作业里引用的个人题学生要能读）
 - 编辑 = 重传完整 md 全文替换 + revision+1；tests/spj_code 永不下发（教师手里有原始 md 可核对）
+- 公共题库管理权限自 2026-10-20 起收敛到系统管理员：课程组 `question_bank:manage` 已删除，教师对公共题只读
 
 ### 12.4 作业组卷 API（M7 落地）
 
-**语义（2026-10-18 定稿）**：题库两级——课程组公共题库面向整个课程（跨教学班复用）、教师题库面向教学班级（自建自用）；选题可见集合 = 公共题 + 本人个人题，他人个人题一律 404（防探测）。
+**语义（2026-10-18 定稿，2026-10-20 调整）**：公共题库由系统管理员统一导入/维护、面向全平台教师开放选题；教师个人题库面向教学班级（自建自用）；选题可见集合 = 公共题 + 本人个人题，他人个人题一律 404（防探测）。
 
 | 端点 | 方法 | 权限 | 说明 |
 |---|---|---|---|
@@ -545,6 +546,27 @@ POST /run 跑 spj：
 **删除语义**：无提交可删（连带中间表）；有提交 400（DB 层 Submission.homework PROTECT 兜底，M7 决策 d）。
 
 **学生侧**：列表三态由服务端按当前时间派生；详情开始前 404（防提前看题，列表仍显示「未开始」徽章）；题目列表复用学生题面白名单（不含 tests/spj_code/判题配置）；我的提交摘要仅最近 10 条（页面轮询判题进度）。
+
+### 12.5 题库批量导入（2026-10-20 新增，仅系统管理员）
+
+**入口**：
+- `/admin/teaching/problem/import/`：管理员后台导入页（上传 ZIP、查看结果与最近批次）
+- `POST /api/admin/problems/import/`：管理员 API（`file` + 可选 `overwrite`），仅 `is_superuser`
+
+**ZIP 包结构**：`manifest.xlsx`（或 `manifest.csv`） + 每题一个 `.md` 文件。
+清单列（表头大小写/下划线不敏感）：`file`（必填）、`code`（缺省用 file 路径）、
+`tier`、`languages`、`compareStrategy`；支持中文档位/策略别名。
+
+**导入语义**：
+- 导入题目一律进入公共题库（`is_public=True`），`owner` 为执行导入的管理员
+- `Problem.source_code` 唯一 + `source_hash` 记录 markdown 原文 SHA256：
+  内容未变 → 跳过；内容变化且 `overwrite=True` → 更新并 `revision+1`；否则逐条报错
+- 坏 md、缺文件、未登记文件、重复 code 只影响对应行，其余题正常导入
+- 限制：ZIP ≤64MB、解压总量 ≤256MB、单题 md ≤6MB、单批 ≤2000 题
+- 每次导入写一条 `AsyncTask(type=import)` 记录，管理页可查看最近批次
+
+**规模化适配**：教师题库列表与作业选题面板支持 `q`（标题关键词）、`tier` 筛选和
+分页加载；1000 题规模下不再一次性拉全量。
 
 ## 十三、资源限制策略（分档）
 
@@ -689,14 +711,14 @@ v1 经外部设计审查（P0×5 / P1×14 / P2×8），本版修订：
 ### v7（2026-10-18，M6 markdown 录题落地修订）
 
 - **解析器实现口径**（`teaching/problem_markdown.py`）：逐行状态机提取受保护块（input-sample/output-sample/input/output/spj-python），普通代码块原样保留进正文；未闭合围栏 400；points 仅接受 1~100 整数，未标注点平分 100（余数补给前几个未标注点，标注点保持标注值——教师自行保证总和语义）；标题取第一个一级标题行并在重建正文时剔除；md 总上限 6MB、隐藏测试点/样例各上限 20 组、单组数据 256KB；spj 入库前 ast.parse 语法校验
-- **题库两级归属 API 落地**（12.1/12.3）：教师列表 = 公共题库 + 本人个人题（分页 20，按 updated_at 倒序）；建题端点决定归属——`POST /api/teacher/problems/` 个人题（homework:bank）、`POST /api/teacher/public-problems/` 公共题（question_bank:manage），请求体 isPublic 一律无效；`GET/PUT/DELETE /api/teacher/problems/<id>/` 不设统一 permCode，由服务层 `getManageableProblem` 对象级判 403（无任何题库权限）/404（无权限或非本人个人题，防探测）
+- **题库归属 API 落地**（12.1/12.3）：教师列表 = 公共题库 + 本人个人题（分页 20，按 updated_at 倒序）；建题端点决定归属——`POST /api/teacher/problems/` 个人题（homework:bank）、`POST /api/teacher/public-problems/` 公共题（2026-10-20 起仅超级用户），请求体 isPublic 一律无效；`GET/PUT/DELETE /api/teacher/problems/<id>/` 的 GET 允许教师读公共题，PUT/DELETE 由服务层 `getManageableProblem` 对象级判 403/404（防探测）
 - **学生题面端点**（12.2）：`GET /api/problems/<id>/`（homework:view），不按 is_public 过滤——作业里引用的教师个人题学生要能读；白名单仅 title/statementMd/samples/languages，不含 tests/spj_code/tier/compareStrategy
 - **编辑语义冻结**（决策 d）：编辑 = 重传完整 md 全文替换（与建题同一条解析校验链），成功后 revision+1；已受理提交用快照判题不受影响（7.3）；解析失败 400 且原题不动（先解析后落库）
 
 ### v8（2026-10-18，M7 作业组卷与页面落地修订）
 
 - **新增 12.4 作业组卷 API 规格**（全章节）：端点表、创建校验（题数上限 20、数组序 = 题序、revision 快照冻结）、编辑锁定语义、删除语义、学生三态与开始前 404
-- **题库定位语义定稿**：课程组公共题库面向整个课程（跨教学班复用）、教师题库面向教学班级（自建自用）；选题可见集合 = 公共题 + 本人个人题
+- **题库定位语义定稿**：公共题库由系统管理员维护、全平台教师可选题；教师个人题库面向教学班级（自建自用）；选题可见集合 = 公共题 + 本人个人题
 - **锁定决策落地**：已有提交 → 题目列表锁定（只允许改标题/时间）；截止时间只允许向后延长；无提交可删、有提交 400（DB 层 PROTECT 兜底）
 - **学生详情防提前看题**：开始前详情 404，列表仅显示「未开始」徽章（提交层 7.1 的「作业尚未开始」400 保持不变，学生已知道作业存在）
 - **页面实装**（开发预览）：教师题库页（录题/编辑 md 表单 + 课程组公共题入口）、教学班作业 Tab（作业列表 + 组卷选题面板）、学生作业列表（三态徽章）、学生作业详情（题面 markdown 渲染 + 代码提交 + 判题结果 2s 轮询）——全部 fetch 12.x API，服务端校验为唯一防线

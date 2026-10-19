@@ -195,7 +195,9 @@ class ProblemApiTests(TestCase):
                                                       password=PASSWORD)
         cls.teacher.groups.add(Group.objects.get(name='教师'))
         cls.teacher2.groups.add(Group.objects.get(name='教师'))
-        cls.courseTeam.groups.add(Group.objects.get(name='课程组'))
+        # 课程组组长同时也是教师（两组共存），与生产账号一致
+        cls.courseTeam.groups.add(Group.objects.get(name='课程组'),
+                                  Group.objects.get(name='教师'))
         cls.student.groups.add(Group.objects.get(name='学生'))
         # 列表可见性测试用的三本题：本人个人题 / 他人个人题 / 公共题
         cls.personalProblem = Problem.objects.create(
@@ -240,6 +242,31 @@ class ProblemApiTests(TestCase):
         self.assertIn(self.publicProblem.id, ids)
         self.assertNotIn(self.otherPersonal.id, ids)
 
+    def test_teacher_list_filters(self):
+        """题库列表筛选：scope / q / tier，脏参数 400"""
+        advancedPublic = Problem.objects.create(
+            title='进阶公共题', statement_md='正文', samples=[],
+            tests=[{'input': '1', 'output': '1', 'points': 100}],
+            languages=['c'], tier='advanced',
+            owner=self.courseTeam, is_public=True)
+        self._login(self.teacher)
+
+        def idsOf(query):
+            resp = self.client.get('/api/teacher/problems/' + query)
+            self.assertEqual(resp.status_code, 200, msg=query)
+            return {item['id'] for item in resp.data['results']}
+
+        self.assertIn(self.publicProblem.id, idsOf('?scope=public'))
+        self.assertIn(advancedPublic.id, idsOf('?scope=public'))
+        self.assertNotIn(self.personalProblem.id, idsOf('?scope=public'))
+        self.assertEqual(idsOf('?scope=mine'), {self.personalProblem.id})
+        self.assertEqual(idsOf('?q=进阶'), {advancedPublic.id})
+        self.assertEqual(idsOf('?tier=advanced'), {advancedPublic.id})
+        self.assertEqual(self.client.get(
+            '/api/teacher/problems/?scope=bad').status_code, 400)
+        self.assertEqual(self.client.get(
+            '/api/teacher/problems/?tier=extreme').status_code, 400)
+
     def test_student_cannot_access_teacher_problem_api(self):
         """学生无 homework:bank → 教师题库接口 403"""
         self._login(self.student)
@@ -248,6 +275,18 @@ class ProblemApiTests(TestCase):
         self.assertEqual(self.client.post(
             '/api/teacher/problems/', self._mdPayload(),
             format='json').status_code, 403)
+
+    def test_question_bank_page_renders_by_role(self):
+        """题库页正常渲染：普通教师无公共题入口，超级用户有"""
+        self._login(self.teacher)
+        resp = self.client.get('/teacher/question-bank/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, '公共题库由系统管理员维护')
+        self.assertNotContains(resp, '＋ 新建公共题')
+        self._login(self.superUser)
+        resp = self.client.get('/teacher/question-bank/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, '＋ 新建公共题')
 
     # ---------- 建题（端点决定归属，12.3） ----------
 
@@ -265,9 +304,16 @@ class ProblemApiTests(TestCase):
         # 未标注单点 → 100 分
         self.assertEqual(problem.tests[0]['points'], 100)
 
-    def test_course_team_create_public_problem(self):
-        """课程组建公共题：is_public=True（请求体 isPublic 无效）"""
+    def test_course_team_cannot_create_public_problem(self):
+        """课程组无公共题库写权限 → 公共题库录题 403（超管独占）"""
         self._login(self.courseTeam)
+        resp = self.client.post('/api/teacher/public-problems/',
+                                self._mdPayload(isPublic=False), format='json')
+        self.assertEqual(resp.status_code, 403)
+
+    def test_superuser_create_public_problem(self):
+        """超级用户可新建公共题：is_public=True"""
+        self._login(self.superUser)
         resp = self.client.post('/api/teacher/public-problems/',
                                 self._mdPayload(isPublic=False), format='json')
         self.assertEqual(resp.status_code, 200)
@@ -275,7 +321,7 @@ class ProblemApiTests(TestCase):
         self.assertTrue(problem.is_public)
 
     def test_teacher_cannot_create_public_problem(self):
-        """教师无 question_bank:manage → 公共题库录题 403"""
+        """教师无公共题库写权限 → 公共题库录题 403"""
         self._login(self.teacher)
         resp = self.client.post('/api/teacher/public-problems/',
                                 self._mdPayload(), format='json')
@@ -311,23 +357,50 @@ class ProblemApiTests(TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_teacher_update_public_problem_404(self):
-        """教师无 question_bank:manage → 编辑公共题 404"""
+        """教师无公共题库写权限 → 编辑公共题 404"""
         self._login(self.teacher)
         resp = self.client.put(
             f'/api/teacher/problems/{self.publicProblem.id}/',
             self._mdPayload(), format='json')
         self.assertEqual(resp.status_code, 404)
 
-    def test_course_team_update_public_problem(self):
-        """课程组编辑公共题成功"""
+    def test_course_team_cannot_update_public_problem(self):
+        """课程组无公共题写权限 → 编辑公共题 404（有题库权限但对象不可管）"""
         self._login(self.courseTeam)
         resp = self.client.put(
             f'/api/teacher/problems/{self.publicProblem.id}/',
             self._mdPayload(markdown=buildMd(title='公共改', tests=[('1', '1', '')])),
             format='json')
+        self.assertEqual(resp.status_code, 404)
+        self.publicProblem.refresh_from_db()
+        self.assertEqual(self.publicProblem.title, '公共题')
+
+    def test_teacher_can_read_public_problem_detail(self):
+        """普通教师可读公共题详情（只读），但改不了"""
+        self._login(self.teacher)
+        resp = self.client.get(
+            f'/api/teacher/problems/{self.publicProblem.id}/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data['title'], '公共题')
+
+    def test_course_team_can_read_public_problem_detail(self):
+        """课程组作为教师可读公共题详情"""
+        self._login(self.courseTeam)
+        resp = self.client.get(
+            f'/api/teacher/problems/{self.publicProblem.id}/')
+        self.assertEqual(resp.status_code, 200)
+
+    def test_superuser_update_public_problem(self):
+        """超级用户可编辑公共题，revision+1"""
+        self._login(self.superUser)
+        resp = self.client.put(
+            f'/api/teacher/problems/{self.publicProblem.id}/',
+            self._mdPayload(markdown=buildMd(title='超管改公共', tests=[('1', '1', '')])),
+            format='json')
         self.assertEqual(resp.status_code, 200)
         self.publicProblem.refresh_from_db()
-        self.assertEqual(self.publicProblem.title, '公共改')
+        self.assertEqual(self.publicProblem.title, '超管改公共')
+        self.assertEqual(self.publicProblem.revision, 2)
 
     def test_course_team_cannot_manage_teacher_personal(self):
         """课程组无权管理教师个人题 → 404"""

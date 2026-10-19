@@ -20,7 +20,8 @@ class User(AbstractUser):
     class Meta:
         verbose_name = '用户'
         verbose_name_plural = '用户'
-        # 注册全部细粒度权限点（教师权限按《教师.xmind》2026-10-13 重新设计，共 23 个）
+        # 注册全部细粒度权限点（2026-10-20 公共题库改为系统管理员独占，
+        # 删除 question_bank_manage，共 22 个）
         # 注意：教师的所有权限在业务接口里还要做「仅限教学班级」的对象级校验
         permissions = [
             # ---- 教务 ----
@@ -32,7 +33,6 @@ class User(AbstractUser):
             # ---- 课程组（2026-10-13 按《课题组.xmind》重新设计）----
             ('knowledge_manage', 'AI Agent知识库增删改查'),
             ('material_class_visible', '课程下班级资料增删改查'),
-            ('question_bank_manage', '作业题库增删改查'),
             ('chapter_manage', '课程章节设计'),
             # ---- 教师（仅限教学班级）----
             ('notice_manage', '班级通知增删改查'),

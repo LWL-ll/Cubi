@@ -1,7 +1,7 @@
-"""录题服务层：markdown 解析 + 元数据校验 + 题库两级权限（docs/OJ对接设计.md 10/12 章）
+"""录题服务层：markdown 解析 + 元数据校验 + 题库权限（docs/OJ对接设计.md 10/12 章）
 
-题库两级归属（12.1）：
-- is_public=True：课程组公共题库（question_bank:manage 管理）
+题库归属（12.1，2026-10-20 调整）：
+- is_public=True：公共题库（系统管理员导入/维护，教师只读，可选题）
 - is_public=False：教师个人题库（homework:bank 管理，owner=本人）
 
 安全边界（6.2 不可变边界）：tests/spj_code 只存在于服务端判题链路，
@@ -83,20 +83,43 @@ def updateProblem(problem, payload):
 
 
 def canManageProblem(user, problem):
-    """对象级判断：本人个人题（homework:bank）或公共题（question_bank:manage）；
-    超级用户放行"""
+    """对象级判断：本人个人题（homework:bank）；公共题仅超级用户可管理"""
     if user.is_superuser:
         return True
     if problem.is_public:
-        return hasPerm(user, 'question_bank:manage')
+        return False
     return problem.owner_id == user.id and hasPerm(user, 'homework:bank')
 
 
+def canReadProblem(user, problem):
+    """对象级读权限：超级用户 / 公共题（教师只读）/ 本人个人题
+
+    教师必须拥有 homework:bank 才能进入题库功能；公共题对全体教师开放。
+    """
+    if user.is_superuser:
+        return True
+    if not hasPerm(user, 'homework:bank'):
+        return False
+    return problem.is_public or problem.owner_id == user.id
+
+
+def getReadableProblem(user, problemId):
+    """教师读题：公共题或本人个人题；他人个人题 404（防探测）
+
+    与 getManageableProblem 分离：公共题教师可读不可改（需求 2026-10-20）。
+    """
+    if not (user.is_superuser or hasPerm(user, 'homework:bank')):
+        raise PermissionDenied('没有题库访问权限')
+    problem = Problem.objects.filter(pk=problemId).first()
+    if problem is None or not canReadProblem(user, problem):
+        raise Http404('题目不存在')
+    return problem
+
+
 def getManageableProblem(user, problemId):
-    """教师/课程组对象级取题：无任何题库权限 → 403；有权但不是本人
-    个人题/公共题 → 404（防探测，与全项目对象级语义一致）"""
-    if not (user.is_superuser or hasPerm(user, 'homework:bank')
-            or hasPerm(user, 'question_bank:manage')):
+    """教师/管理员管理题目：无任何题库权限 → 403；有权但不是本人
+    个人题/公共题（非超管）→ 404（防探测，与全项目对象级语义一致）"""
+    if not (user.is_superuser or hasPerm(user, 'homework:bank')):
         raise PermissionDenied('没有题库管理权限')
     problem = Problem.objects.filter(pk=problemId).first()
     if problem is None or not canManageProblem(user, problem):

@@ -9,14 +9,16 @@
 
 | 项 | 值 |
 |---|---|
-| 实例 | `https://oj.liuwenli.cn`（go-judge v1.13.3，阿里云 ECS + Docker 官方镜像 `criyle/go-judge`，Debian 13 底，2026-10-18 实测） |
+| 实例 | `https://oj.liuwenli.cn`（go-judge v1.13.3，阿里云 ECS + Docker 官方镜像 `criyle/go-judge`，Debian 13 底，2026-10-18 实测，2026-10-19 复测通过） |
 | 认证 | `Authorization: Bearer <OJ_AUTH_TOKEN>` |
 | 凭证注入 | **只从环境变量 `OJ_AUTH_TOKEN` 读取**（settings.py 已配置），严禁硬编码进仓库；泄露后立即轮换 |
 | HTTP 超时 | 30s（`OJ_RUN_TIMEOUT`，大于单题最大 clockLimit 10s + 网络余量） |
 
-## 二、镜像语言实测结论（2026-10-18 实测）
+## 二、镜像语言实测结论（2026-10-18 实测，2026-10-19 复测）
 
 > 由 `scripts/sandbox_probe.py` 输出冻结；镜像升级后必须重跑实测并更新本表。
+> **2026-10-19 复测：9 项全 PASS，结论与 10-18 一致**（cgroup controllers 实测列出
+> cpu/cpuacct/cpuset/memory/pids；版本、gcc、python、内存强制均无变化）。
 
 | 实测项 | 结论 |
 |---|---|
@@ -87,5 +89,5 @@ Python 直接 `python3 main.py` 内联，无编译步）
 镜像升级 / 语言版本变化 / 沙箱地址迁移时：
 1. 重跑 `scripts/sandbox_probe.py`（`OJ_AUTH_TOKEN=xxx python scripts/sandbox_probe.py`）
 2. 用输出更新本文第二节实测表
-3. 全量测试回归（`python manage.py test`，当前 230 测试）
+3. 全量测试回归（`python manage.py test`，当前 231 测试）
 4. 重跑 `docs/OJ验收清单.md` 端到端验收

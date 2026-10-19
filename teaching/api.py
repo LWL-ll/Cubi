@@ -7,6 +7,7 @@
 """
 from django.db.models import Q
 from django.http import Http404
+from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -14,7 +15,7 @@ from rest_framework.response import Response
 from academics.models import TeachingClass
 from academics.serializers import TeachingClassSerializer
 from teaching.models import Problem, Submission
-from users.permissions import IsTeacherGroup, PermRequired
+from users.permissions import IsSuperUser, IsTeacherGroup, PermRequired
 
 from .helpers import getTeacherTeachingClass
 from .homework_service import (createHomework, deleteHomework,
@@ -22,7 +23,7 @@ from .homework_service import (createHomework, deleteHomework,
                                listClassHomeworks, listStudentHomeworks,
                                updateHomework)
 from .problem_service import (createProblem, getManageableProblem,
-                              updateProblem)
+                              getReadableProblem, updateProblem)
 from .serializers import (HomeworkDetailSerializer,
                           HomeworkListSerializer,
                           HomeworkStudentDetailSerializer,
@@ -108,16 +109,37 @@ class TeacherProblemListCreateView(APIView):
     """教师题库列表与录题：GET/POST /api/teacher/problems/
 
     GET：题库列表 = 公共题库 + 本人个人题（12.1），按更新时间倒序，
-    分页 20/页。权限码：homework:bank（教师）。
+    分页 20/页。支持 q（标题关键词）、tier（难度档位）、
+    scope（all/public/mine）筛选，适配上千题的公共题库。
+    权限码：homework:bank（教师）。
     POST：新建个人题（is_public=False，归属由端点决定 12.3）。
     """
     permission_classes = [PermRequired]
     permCode = 'homework:bank'
 
     def get(self, request):
-        queryset = Problem.objects.filter(
-            Q(is_public=True) | Q(owner=request.user)
-        ).order_by('-updated_at')
+        scope = request.query_params.get('scope', 'all')
+        if scope == 'public':
+            queryset = Problem.objects.filter(is_public=True)
+        elif scope == 'mine':
+            queryset = Problem.objects.filter(is_public=False,
+                                              owner=request.user)
+        elif scope == 'all':
+            queryset = Problem.objects.filter(
+                Q(is_public=True) | Q(owner=request.user))
+        else:
+            raise ValidationError({'scope': 'scope 必须是 all/public/mine'})
+        keyword = (request.query_params.get('q') or '').strip()
+        if keyword:
+            # 标题搜索足够选题定位；题面全文搜索代价高，不做
+            queryset = queryset.filter(title__icontains=keyword[:100])
+        tier = request.query_params.get('tier')
+        if tier:
+            if tier not in dict(Problem.TIER_CHOICES):
+                raise ValidationError(
+                    {'tier': 'tier 必须是 beginner/basic/advanced'})
+            queryset = queryset.filter(tier=tier)
+        queryset = queryset.order_by('-updated_at', '-id')
         paginator = ProblemPagination()
         page = paginator.paginate_queryset(queryset, request)
         serializer = ProblemListSerializer(page, many=True)
@@ -131,11 +153,11 @@ class TeacherProblemListCreateView(APIView):
 class PublicProblemCreateView(APIView):
     """公共题库录题：POST /api/teacher/public-problems/
 
-    权限码：question_bank:manage（课程组；教师无此码 → 403）。
-    is_public=True 由端点决定，请求体 isPublic 一律无效（12.3）。
+    2026-10-20 起公共题库由系统管理员独占维护：仅 superuser 可调用
+    （课程组 question_bank:manage 已收回）。is_public=True 由端点决定，
+    请求体 isPublic 一律无效（12.3）。
     """
-    permission_classes = [PermRequired]
-    permCode = 'question_bank:manage'
+    permission_classes = [IsSuperUser]
 
     def post(self, request):
         problem = createProblem(request.user, request.data, isPublic=True)
@@ -145,9 +167,9 @@ class PublicProblemCreateView(APIView):
 class TeacherProblemDetailView(APIView):
     """题库题目详情/编辑/删除：GET/PUT/DELETE /api/teacher/problems/<id>/
 
-    不设 permCode：教师与课程组权限码不同（homework:bank vs
-    question_bank:manage），对象级由 getManageableProblem 统一判
-    403/404（12.2，防探测）。
+    不设 permCode：教师与超级用户的对象级规则不同，统一由服务层判
+    403/404（12.2，防探测）。GET 用 getReadableProblem：教师可读公共题
+    和本人个人题；PUT/DELETE 用 getManageableProblem：公共题仅超管可改。
     GET 返回含 statement_md/samples 的详情，不含 tests/spj_code（6.2）。
     PUT = 重传完整 md 全文替换，revision+1（决策 d）。
     DELETE 删除题目（已有提交用快照判题，不受影响）。
@@ -155,7 +177,7 @@ class TeacherProblemDetailView(APIView):
     permission_classes = [PermRequired]
 
     def get(self, request, problemId):
-        problem = getManageableProblem(request.user, problemId)
+        problem = getReadableProblem(request.user, problemId)
         return Response(ProblemDetailSerializer(problem).data)
 
     def put(self, request, problemId):

@@ -20,10 +20,10 @@ PERM_CODES = {
     'course:manage': 'course_manage',
     'course:assign_class': 'course_assign_class',
     'user:assign_role': 'user_assign_role',
-    # 课程组（2026-10-13 按《课题组.xmind》重新设计）
+    # 课程组（2026-10-13 按《课题组.xmind》重新设计；
+    # 2026-10-20 公共题库改为系统管理员独占，移除 question_bank:manage）
     'knowledge:manage': 'knowledge_manage',
     'material:class_visible': 'material_class_visible',
-    'question_bank:manage': 'question_bank_manage',
     'chapter:manage': 'chapter_manage',
     # 教师（仅限教学班级，2026-10-13 按《教师.xmind》重新设计）
     'notice:manage': 'notice_manage',
@@ -60,9 +60,10 @@ GROUP_PRIORITY = ['admin', 'course_team', 'teacher', 'student']
 GROUP_PERMISSIONS = {
     'admin': ['class:manage', 'class:assign_teacher', 'course:manage',
               'course:assign_class', 'user:assign_role', 'profile:edit'],
-    # 课程组权限（2026-10-13 按《课题组.xmind》重新设计）
+    # 课程组权限（2026-10-13 按《课题组.xmind》重新设计；
+    # 公共题库写权限已收回，改由超级用户导入/维护）
     'course_team': ['knowledge:manage', 'material:class_visible',
-                    'question_bank:manage', 'chapter:manage', 'profile:edit'],
+                    'chapter:manage', 'profile:edit'],
     # 教师权限（2026-10-13 按《教师.xmind》重新设计，所有权限仅限教学班级）
     'teacher': ['notice:manage', 'analysis:view', 'material:class_manage',
                 'homework:publish', 'homework:bank', 'homework:remind',
@@ -161,7 +162,7 @@ class IsStudentGroup(BasePermission):
 class IsCourseTeamGroup(BasePermission):
     """DRF 权限类：仅「课程组」分组（或超级用户）可访问（课程组 API 用）
 
-    课程组功能（知识库/课程组资料/题库/章节）落地时的 API 入口校验。
+    课程组功能（知识库/课程组资料/章节）落地时的 API 入口校验。
     """
     def has_permission(self, request, view):
         user = request.user
@@ -170,3 +171,14 @@ class IsCourseTeamGroup(BasePermission):
         if user.is_superuser:
             return True
         return user.groups.filter(name=GROUP_NAMES['course_team']).exists()
+
+
+class IsSuperUser(BasePermission):
+    """DRF 权限类：仅系统管理员（superuser）可访问
+
+    用于公共题库导入/维护等只允许系统管理员操作的接口。
+    注意与 Django 的 IsAdminUser（is_staff）区分：这里要求 is_superuser。
+    """
+    def has_permission(self, request, view):
+        user = request.user
+        return bool(user.is_authenticated and user.is_superuser)

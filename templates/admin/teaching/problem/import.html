@@ -1,0 +1,120 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">首页</a>
+  &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+  &rsaquo; <a href="{% url 'admin:teaching_problem_changelist' %}">题目</a>
+  &rsaquo; 批量导入题库
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+  <p class="help">
+    上传 ZIP 包：包内每题一个 <code>.md</code> 文件，并附
+    <code>manifest.xlsx</code>（或 <code>manifest.csv</code>）清单。
+    导入的题目进入<strong>公共题库</strong>，所有教师可查看和选题，仅系统管理员可修改。
+  </p>
+
+  <form method="post" enctype="multipart/form-data" novalidate>
+    {% csrf_token %}
+    <fieldset class="module aligned">
+      <div class="form-row">
+        <label for="file" class="required">ZIP 文件：</label>
+        <input type="file" name="file" id="file" accept=".zip" required>
+      </div>
+      <div class="form-row">
+        <label for="overwrite">覆盖已存在题目：</label>
+        <input type="checkbox" name="overwrite" id="overwrite">
+        <span class="help">
+          勾选后，清单中 code 已存在且内容有变化的题目会更新并 revision+1；
+          不勾选则跳过这些题。
+        </span>
+      </div>
+    </fieldset>
+    <div class="submit-row">
+      <input type="submit" value="开始导入" class="default">
+      <a href="{% url 'admin:teaching_problem_changelist' %}" class="button cancel-link">返回题目列表</a>
+    </div>
+  </form>
+
+  <details style="margin: 16px 0;">
+    <summary><strong>清单与 markdown 格式说明</strong></summary>
+    <div style="padding: 8px 16px;">
+      <p>清单首行为表头，列名不区分大小写/下划线：</p>
+      <table class="table" style="width:auto;">
+        <thead>
+          <tr><th>列</th><th>必填</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>file</code></td><td>是</td><td>ZIP 内 md 相对路径，如 <code>p0001.md</code></td></tr>
+          <tr><td><code>code</code></td><td>否</td><td>稳定题目编号，缺省用 file；重复导入据此去重</td></tr>
+          <tr><td><code>tier</code></td><td>否</td><td>beginner/basic/advanced（或 入门/基础/进阶），默认 basic</td></tr>
+          <tr><td><code>languages</code></td><td>否</td><td>c,python；默认两者</td></tr>
+          <tr><td><code>compareStrategy</code></td><td>否</td><td>exact/trailing/loose，默认 exact</td></tr>
+        </tbody>
+      </table>
+      <p>md 文件沿用单题录题格式：一级标题、题面、可选公开样例、至少一组
+        <code>input/output</code> 隐藏测试点，可选 <code>spj-python</code>。</p>
+      <p>限制：ZIP ≤64MB、解压总量 ≤256MB、单题 md ≤6MB、单批 ≤2000 题；
+        文件名建议使用 ASCII（如 p0001.md），中文文件名也做了兼容处理。</p>
+    </div>
+  </details>
+
+  {% if result %}
+  <h2>导入结果</h2>
+  <div class="module" style="padding: 12px 16px;">
+    <p>
+      清单题目数 <strong>{{ result.total }}</strong>：
+      新建 <strong>{{ result.createdCount }}</strong>、
+      更新 <strong>{{ result.updatedCount }}</strong>、
+      跳过 <strong>{{ result.skippedCount }}</strong>、
+      错误 <strong>{{ result.errorCount }}</strong>
+    </p>
+    {% if result.errors %}
+    <table class="table" style="width:100%;">
+      <thead>
+        <tr><th style="width:32%;">文件</th><th>原因</th></tr>
+      </thead>
+      <tbody>
+        {% for item in result.errors %}
+        <tr><td><code>{{ item.file }}</code></td><td>{{ item.reason }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="success">本批没有错误。</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <h2>最近导入</h2>
+  <table class="table" style="width:100%;">
+    <thead>
+      <tr>
+        <th>时间</th><th>操作人</th><th>状态</th><th>题目数</th>
+        <th>新建</th><th>更新</th><th>跳过</th><th>错误</th><th>说明</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for batch in recentBatches %}
+      <tr>
+        <td>{{ batch.created_at|date:"Y-m-d H:i:s" }}</td>
+        <td>{{ batch.created_by.name|default:batch.created_by.username }}</td>
+        <td>{{ batch.get_status_display }}</td>
+        <td>{{ batch.total }}</td>
+        <td>{{ batch.result.createdCount|default:"-" }}</td>
+        <td>{{ batch.result.updatedCount|default:"-" }}</td>
+        <td>{{ batch.result.skippedCount|default:"-" }}</td>
+        <td>{{ batch.result.errorCount|default:"-" }}</td>
+        <td>{{ batch.error|default:"-" }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="9" class="text-secondary">暂无导入记录</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

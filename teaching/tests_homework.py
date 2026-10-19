@@ -110,6 +110,15 @@ class HomeworkApiTests(TestCase):
             f'/api/teacher/teaching-classes/{self.teachingClass.id}/homeworks/',
             self._createPayload(**kwargs), format='json')
 
+    def test_homework_tab_page_renders(self):
+        """作业 Tab 页面正常渲染，含选题搜索与已选清单容器"""
+        self._login(self.teacher)
+        resp = self.client.get(
+            f'/teacher/teaching-classes/{self.teachingClass.id}/?tab=homework')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'pickerSearch')
+        self.assertContains(resp, 'selectedProblems')
+
     def _makeSubmission(self, homework, user=None, problem=None, score=0):
         """直接建一条已判题提交（锁定/删除语义测试用，绕开判题链路）"""
         return Submission.objects.create(
