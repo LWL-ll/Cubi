@@ -209,6 +209,13 @@ OJ_AUTH_TOKEN = os.environ.get('OJ_AUTH_TOKEN', '')
 OJ_RUN_TIMEOUT = 30
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True  # 关闭浏览器会话即失效
 
+# ==================== Agent 讲题（OJ 内部模块）====================
+# 本期只留接口：Agent 本体仍在开发中，AGENT_ENABLED=False 时判题错误终态
+# 不创建报告、不投递任务（实现见 teaching/agent_service.py）
+AGENT_ENABLED = os.environ.get('AGENT_ENABLED', '0') == '1'
+AGENT_CLUSTER = 'agent'        # Agent 专用 qcluster 集群名
+AGENT_MAX_ITERATIONS = 5       # Agent 自调试最大迭代次数（接入后生效）
+
 # ==================== 异步任务队列（django-q2）====================
 # worker 独立进程运行：python manage.py qcluster
 # broker 用 Django ORM（django_q_ormq 表），无需 Redis 等中间件
@@ -243,6 +250,16 @@ Q_CLUSTER = {
             'queue_limit': 50,     # 判题队列积压上限，防恶意提交撑爆内存
             'max_attempts': 2,     # Q2 层兜底重试一次；业务层由租约状态机
                                    # 保证重复投递不重复判题
+        },
+        # Agent 讲题专用集群（独立 qcluster 进程消费）
+        # 启动方式：Q_CLUSTER_NAME=agent python manage.py qcluster
+        # 投递方式：async_task(..., cluster='agent')
+        'agent': {
+            'timeout': 1800,       # LLM 调用 + 多轮沙箱验证，给足 30 分钟
+            'retry': 1900,         # 必须大于 timeout（django-q2 官方约束）
+            'workers': 1,          # 单 worker：避免与判题 worker 抢沙箱并发
+            'queue_limit': 50,     # 队列积压上限
+            'max_attempts': 2,     # Q2 兜底重试；报告唯一约束保证幂等
         },
     },
 }

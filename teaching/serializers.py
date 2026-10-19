@@ -6,6 +6,8 @@ from academics.models import ClassMembership, TeachingClass
 from academics.serializers import (CourseBriefSerializer,
                                    DepartmentBriefSerializer)
 
+from .agent_service import getTutorReport
+
 
 class TeacherTeachingClassSerializer(serializers.ModelSerializer):
     """我的教学班列表项：名称、学期、课程、学院、学生数
@@ -62,13 +64,28 @@ class SubmissionListSerializer(serializers.Serializer):
 
 
 class SubmissionDetailSerializer(SubmissionListSerializer):
-    """学生提交详情：列表字段 + code 原文与重复关联
+    """学生提交详情：列表字段 + code 原文 + Agent 讲题报告摘要
 
     code 仅本人可见（对象级 404 已保证）；教师看学生代码走
     教学班聚合接口（analysis:view），不走本接口。
+    agentReport 只含学生可见字段：correctedCode 是 Agent 自测代码，
+    绝不下发（docs/OJ系统介绍.md 保密链）。
     """
     code = serializers.CharField(read_only=True)
     repeatOfId = serializers.IntegerField(source='repeat_of_id', read_only=True)
+    agentReport = serializers.SerializerMethodField()
+
+    def get_agentReport(self, obj):
+        """Agent 讲题报告摘要；无报告（Agent 未启用/已通过）返回 None"""
+        report = getTutorReport(obj)
+        if report is None:
+            return None
+        return {
+            'status': report.status,
+            'diagnosis': report.diagnosis,
+            'explanation': report.explanation,
+            'iterations': report.iterations,
+        }
 
 
 class ProblemListSerializer(serializers.Serializer):

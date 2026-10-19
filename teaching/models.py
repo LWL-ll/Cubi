@@ -296,3 +296,49 @@ class JudgeTask(models.Model):
 
     def __str__(self):
         return f'判题任务 #{self.submission_id}（{self.get_status_display()}）'
+
+
+class AgentTutorReport(models.Model):
+    """Agent 讲题报告：学生代码判错后，Agent 自调试并给出讲解的落库结果
+
+    产品口径（2026-10-19 确认）：
+    - Agent 会自己写代码并在沙箱运行，直到自己写的代码全部测试点 AC，
+      才生成 diagnosis/explanation 讲给学生——讲解经过运行验证
+    - corrected_code 是 Agent 自测代码，仅服务端留痕，任何接口都不下发
+    - diagnosis/explanation 面向学生，不得包含隐藏测试点与预期输出
+    - 与 Submission 一对一：Q2 重复投递不会重复生成报告（唯一约束幂等）
+    - 本期 Agent 本体尚未接入，AGENT_ENABLED=False 时不创建报告
+    """
+
+    STATUS_PENDING = 'pending'
+    STATUS_RUNNING = 'running'
+    STATUS_DONE = 'done'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, '等待中'),
+        (STATUS_RUNNING, '分析中'),
+        (STATUS_DONE, '已完成'),
+        (STATUS_FAILED, '失败'),
+    ]
+
+    submission = models.OneToOneField(
+        Submission, models.CASCADE, verbose_name='提交',
+        related_name='agent_report')
+    status = models.CharField('状态', max_length=10, choices=STATUS_CHOICES,
+                              default=STATUS_PENDING)
+    diagnosis = models.TextField('错误诊断（学生可见）', blank=True)
+    explanation = models.TextField('讲解（学生可见）', blank=True)
+    # Agent 自测通过的代码：只用于证明讲解正确性，永不下发（保密/防抄袭）
+    corrected_code = models.TextField('Agent 自测代码（永不下发）', blank=True)
+    iterations = models.PositiveSmallIntegerField('自调试迭代次数', default=0)
+    error = models.TextField('Agent 执行错误（脱敏）', blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    finished_at = models.DateTimeField('完成时间', null=True, blank=True)
+
+    class Meta:
+        verbose_name = 'Agent 讲题报告'
+        verbose_name_plural = 'Agent 讲题报告'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'提交 #{self.submission_id} 讲题（{self.get_status_display()}）'

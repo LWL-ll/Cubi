@@ -243,3 +243,157 @@ def deleteFile(fileId):
             logger.debug('清理 fileId %s：文件已不存在，视为已清理', fileId)
             return
         raise
+
+
+# ==================== Agent 多语言执行（OJ 内部模块调用）====================
+# 题库语言白名单（Problem.languages）保持 c/python 不变；这里是 Agent 自调试
+# 工具：Agent 生成修复代码后需在沙箱运行验证，直到自己代码全部测试点 AC。
+# Java 留接口位（沙箱镜像暂未安装 JDK，2026-10-19 确认）。
+
+AGENT_SUPPORTED_LANGUAGES = frozenset(['python', 'c', 'cpp'])
+AGENT_LANGUAGE_ALIASES = {
+    'python': 'python', 'python3': 'python', 'py': 'python',
+    'c': 'c',
+    'cpp': 'cpp', 'c++': 'cpp',
+    'java': 'java',          # 别名保留：调用时按「暂不支持」明确报错
+}
+# Agent 单次执行限额：调用方可收紧，服务端强制夹紧上限
+AGENT_DEFAULT_TIME_MS = 2000
+AGENT_DEFAULT_MEMORY_MB = 128
+AGENT_MAX_TIME_MS = 5000
+AGENT_MAX_CLOCK_MS = 5000            # clockLimit 上限（毫秒）
+AGENT_MAX_MEMORY_MB = 512
+AGENT_OUTPUT_MAX = 1_048_576         # stdout/stderr 各 1MB
+AGENT_COMPILE_CPU_LIMIT = 10_000_000_000
+AGENT_COMPILE_CLOCK_LIMIT = 20_000_000_000
+AGENT_COMPILE_MEMORY_LIMIT = 536_870_912
+
+
+def runCode(code, language='python', stdin='',
+            timeLimitMs=AGENT_DEFAULT_TIME_MS,
+            memoryLimitMb=AGENT_DEFAULT_MEMORY_MB, clockLimitMs=None):
+    """Agent 沙箱单次执行：运行一段代码并返回清洗后的结果
+
+    与判题链路（submitRun + 测试点比对）的区别：
+    - 不比对预期输出、不做部分分，每次调用独立（不缓存编译产物）
+    - 编译型语言在同一次 /run 请求内「编译 → 运行」两阶段执行
+    返回：{status, stdout, stderr, exitStatus, timeMs, memoryKb}
+    编译失败时 status='Compile Error'（业务层状态，不属于沙箱 9 种字面量）。
+    """
+    normalized = AGENT_LANGUAGE_ALIASES.get(str(language).lower())
+    if normalized not in AGENT_SUPPORTED_LANGUAGES:
+        raise BadRequestError(
+            f'Agent 执行暂不支持语言 {language!r}', 400)
+    cpuMs = _clampMs(timeLimitMs, AGENT_MAX_TIME_MS)
+    clockMs = cpuMs * 3 if clockLimitMs is None else clockLimitMs
+    cpuLimit = cpuMs * 1_000_000
+    clockLimit = _clampMs(clockMs, AGENT_MAX_CLOCK_MS) * 1_000_000
+    memoryLimit = _clampMb(memoryLimitMb) * 1024 * 1024
+    if normalized == 'python':
+        results = submitRun(_buildPythonRunRequest(
+            code, stdin, cpuLimit, clockLimit, memoryLimit))
+        return _cleanRunResult(results[0] if results else {})
+    results = submitRun(_buildCompiledRunRequest(
+        code, normalized, stdin, cpuLimit, clockLimit, memoryLimit))
+    compileResult = results[0] if results else {}
+    if compileResult.get('status') != 'Accepted':
+        # 编译失败不是运行时错误：统一成业务层 Compile Error 交给 Agent 分析
+        return _cleanRunResult(compileResult, status='Compile Error')
+    runResult = results[1] if len(results) > 1 else compileResult
+    return _cleanRunResult(runResult)
+
+
+def _clampMs(value, maxMs):
+    """毫秒限额夹紧：非法值回退默认值，低于 100ms 按 100ms（防 0/负数）"""
+    try:
+        milliseconds = int(value)
+    except (TypeError, ValueError):
+        milliseconds = AGENT_DEFAULT_TIME_MS
+    return max(100, min(milliseconds, maxMs))
+
+
+def _clampMb(value):
+    """内存限额夹紧（MB）：非法值回退默认值，范围 16MB ~ 上限"""
+    try:
+        megabytes = int(value)
+    except (TypeError, ValueError):
+        megabytes = AGENT_DEFAULT_MEMORY_MB
+    return max(16, min(megabytes, AGENT_MAX_MEMORY_MB))
+
+
+def _buildPythonRunRequest(code, stdin, cpuLimit, clockLimit, memoryLimit):
+    """Python 单阶段请求：源码内联 copyIn，stdin 作为 files[0] 注入"""
+    return [{
+        'args': ['python3', 'main.py'],
+        'env': ['PATH=/usr/bin:/bin', 'PYTHONIOENCODING=utf-8'],
+        'files': [{'content': stdin},
+                  {'name': 'stdout', 'max': AGENT_OUTPUT_MAX},
+                  {'name': 'stderr', 'max': AGENT_OUTPUT_MAX}],
+        'copyIn': {'main.py': {'content': code}},
+        'cpuLimit': cpuLimit,
+        'clockLimit': clockLimit,
+        'memoryLimit': memoryLimit,
+        'procLimit': 32,
+        'copyOutMax': AGENT_OUTPUT_MAX,
+    }]
+
+
+def _buildCompiledRunRequest(code, language, stdin,
+                             cpuLimit, clockLimit, memoryLimit):
+    """C/C++ 两阶段请求：编译（独立编译档）→ 运行（prepared 引用产物）
+
+    go-judge 的 {"prepared": "main"} 表示引用同一请求前置命令的
+    copyOut 产物，无需回传 fileId，适合 Agent 一次性执行场景。
+    """
+    if language == 'cpp':
+        sourceName = 'main.cpp'
+        compileArgs = ['g++', 'main.cpp', '-o', 'main', '-O2', '-std=c++17']
+    else:
+        sourceName = 'main.c'
+        compileArgs = ['gcc', 'main.c', '-o', 'main', '-O2', '-std=c11', '-lm']
+    return [
+        {   # 阶段 1：编译（编译档独立，clock 20s 给足）
+            'args': compileArgs,
+            'env': ['PATH=/usr/bin:/bin'],
+            'files': [{'content': ''},
+                      {'name': 'stdout', 'max': AGENT_OUTPUT_MAX},
+                      {'name': 'stderr', 'max': AGENT_OUTPUT_MAX}],
+            'copyIn': {sourceName: {'content': code}},
+            'copyOut': ['main'],
+            'cpuLimit': AGENT_COMPILE_CPU_LIMIT,
+            'clockLimit': AGENT_COMPILE_CLOCK_LIMIT,
+            'memoryLimit': AGENT_COMPILE_MEMORY_LIMIT,
+            'procLimit': 32,
+            'copyOutMax': AGENT_OUTPUT_MAX,
+        },
+        {   # 阶段 2：运行（引用上一步 copyOut 的 main 可执行文件）
+            'args': ['./main'],
+            'env': ['PATH=/usr/bin:/bin'],
+            'files': [{'content': stdin},
+                      {'name': 'stdout', 'max': AGENT_OUTPUT_MAX},
+                      {'name': 'stderr', 'max': AGENT_OUTPUT_MAX}],
+            'copyIn': {'main': {'prepared': 'main'}},
+            'cpuLimit': cpuLimit,
+            'clockLimit': clockLimit,
+            'memoryLimit': memoryLimit,
+            'procLimit': 32,
+            'copyOutMax': AGENT_OUTPUT_MAX,
+        },
+    ]
+
+
+def _cleanRunResult(result, status=None):
+    """把 go-judge 原生 Result 清洗成 Agent 易用的扁平结构
+
+    注意：实测 v1.13.3 的 time 字段单位是秒（tasks_judge.py 已按秒处理），
+    memory 单位是 byte；此处统一换算成毫秒 / KB。
+    """
+    files = result.get('files') or {}
+    return {
+        'status': status or result.get('status', 'Internal Error'),
+        'stdout': files.get('stdout', ''),
+        'stderr': files.get('stderr', '') or result.get('error', ''),
+        'exitStatus': result.get('exitStatus', -1),
+        'timeMs': round(result.get('time', 0) * 1000, 2),
+        'memoryKb': round(result.get('memory', 0) / 1024, 2),
+    }

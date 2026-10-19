@@ -21,6 +21,7 @@ from django.utils import timezone
 from django_q.tasks import async_task
 
 from teaching import judge
+from teaching.agent_service import dispatchTutorAgent
 from teaching.helpers import getStudentTeachingClass
 from teaching.models import JudgeTask, Problem, Submission
 
@@ -134,6 +135,7 @@ def recycleStaleLeases():
       retryable 会永久悬挂。余量内 → 置回 pending 重新投递；余量
       已尽 → failed 终态（不再悬挂）"""
     now = timezone.now()
+    recycledIds = set()  # 本轮第一扫已回收并重新投递的任务（第三扫须排除）
     stale = list(JudgeTask.objects.select_related('submission').filter(
         status=JudgeTask.STATUS_LEASED,
         heartbeat_at__lt=now - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)))
@@ -147,6 +149,7 @@ def recycleStaleLeases():
             claimed_at=None, heartbeat_at=None)
         if not updated:
             continue  # 心跳过期与正常完成竞争：已完成则不动
+        recycledIds.add(task.pk)
         if fileId:
             try:
                 judge.deleteFile(fileId)
@@ -160,9 +163,12 @@ def recycleStaleLeases():
     for task in pending:
         redispatch(task)
     # retryable 孤儿兜底（验收 5.2 实测：q2 重投链断裂后无人救活）：
-    # 只兜 claimed_at 为空（无 worker 持有）的任务，防止与在途判题竞争
+    # 只兜 claimed_at 为空（无 worker 持有）的任务，防止与在途判题竞争；
+    # 排除本轮第一扫刚回收的任务——它们已经 redispatch，不是孤儿，
+    # 否则同一轮会被置回 pending 并重复投递（全量回归抓到的重复投递）
     orphan = list(JudgeTask.objects.select_related('submission').filter(
-        status=JudgeTask.STATUS_RETRYABLE, claimed_at__isnull=True))
+        status=JudgeTask.STATUS_RETRYABLE, claimed_at__isnull=True
+    ).exclude(pk__in=recycledIds))
     for task in orphan:
         if getExecutionCount(task.attempt_id) >= MAX_JUDGE_ATTEMPTS:
             # 执行次数已满：直接判死，避免无限悬挂（attempt_id 闸防并发）
@@ -499,6 +505,9 @@ def writeTerminal(judgeTask, attemptId, status, score, errorDetail,
         if repeatOf is not None:
             fields['repeat_of'] = repeatOf
         Submission.objects.filter(pk=judgeTask.submission_id).update(**fields)
+        # 错误终态提交后触发 Agent 讲题（事务提交后投递；开关关闭时直接返回）
+        submissionId = judgeTask.submission_id
+        transaction.on_commit(lambda: dispatchTutorAgent(submissionId))
     return True
 
 

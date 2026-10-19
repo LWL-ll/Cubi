@@ -90,7 +90,8 @@ class SubmissionDetailView(APIView):
 
     def get(self, request, submissionId):
         submission = Submission.objects.select_related(
-            'problem', 'judge_task').filter(pk=submissionId).first()
+            'problem', 'judge_task', 'agent_report').filter(
+            pk=submissionId).first()
         if submission is None or not (
                 request.user.is_superuser
                 or submission.user_id == request.user.id):
