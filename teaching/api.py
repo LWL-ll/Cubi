@@ -176,6 +176,7 @@ class TeacherProblemDetailView(APIView):
     DELETE 删除题目（已有提交用快照判题，不受影响）。
     """
     permission_classes = [PermRequired]
+    servicePermissionCheck = 'getReadableProblem / getManageableProblem'
 
     def get(self, request, problemId):
         problem = getReadableProblem(request.user, problemId)

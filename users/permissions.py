@@ -115,16 +115,35 @@ def requirePerm(code):
     return decorator
 
 
+def getPermissionDeclarationError(view):
+    """两种声明互斥：有效权限码，或写明服务层的校验函数。"""
+    code = getattr(view, 'permCode', None)
+    service = getattr(view, 'servicePermissionCheck', None)
+    if code is not None and service is not None:
+        return 'permCode 与 servicePermissionCheck 不能同时声明'
+    if code is not None:
+        if not isinstance(code, str) or code not in PERM_CODES:
+            return 'permCode 必须是已注册的权限码'
+        return None
+    if not isinstance(service, str) or not service.strip():
+        return '必须声明有效 permCode，或用 servicePermissionCheck 写明服务层校验函数'
+    return None
+
+
 class PermRequired(BasePermission):
     """DRF 权限类：按视图类声明的 permCode 权限码校验（前后端分离 API 用）
 
-    用法：视图类上写 permCode = 'class:manage'，无权限时自动返回 403
+    用法：声明 permCode；服务层负责权限时声明 servicePermissionCheck。
+    遗漏、未知码或冲突声明一律拒绝（含超级用户），避免漏配意外放行。
     """
     def has_permission(self, request, view):
         if not request.user.is_authenticated:
             return False
+        if getPermissionDeclarationError(view) is not None:
+            return False
         permCode = getattr(view, 'permCode', None)
         if permCode is None:
+            # 仅显式委托服务层时允许进入；服务层仍须执行功能及对象校验。
             return True
         return hasPerm(request.user, permCode)
 

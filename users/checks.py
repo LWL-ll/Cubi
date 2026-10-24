@@ -9,10 +9,42 @@
 数据库尚未迁移完成时（全新环境首次 check）自动跳过数据库部分。
 """
 from django.apps import apps
-from django.core.checks import Error, register
+from django.core.checks import Error, Tags, register
 from django.db.utils import DatabaseError
+from django.urls import URLPattern, URLResolver, get_resolver
 
-from .permissions import GROUP_NAMES, GROUP_PERMISSIONS, PERM_CODES
+from .permissions import (GROUP_NAMES, GROUP_PERMISSIONS, PERM_CODES,
+                          PermRequired, getPermissionDeclarationError)
+
+
+@register(Tags.security)
+def check_api_permission_declarations(app_configs, **kwargs):
+    """扫描已挂载路由，检查 PermRequired 接口声明（含嵌套路由和路由参数）。"""
+    errors = []
+
+    def inspectPatterns(patterns, prefix=''):
+        for pattern in patterns:
+            route = prefix + str(pattern.pattern)
+            if isinstance(pattern, URLResolver):
+                inspectPatterns(pattern.url_patterns, route)
+            elif isinstance(pattern, URLPattern):
+                callback = pattern.callback
+                viewClass = getattr(callback, 'cls', None)
+                if viewClass is None:
+                    continue
+                view = viewClass(**getattr(callback, 'initkwargs', {}))
+                if not any(isinstance(permission, type) and issubclass(permission, PermRequired)
+                           for permission in view.permission_classes):
+                    continue
+                error = getPermissionDeclarationError(view)
+                if error:
+                    errors.append(Error(
+                        error, obj=f'{viewClass.__module__}.{viewClass.__name__} ({route})',
+                        hint='声明已注册的 permCode；若由服务层负责，写明 servicePermissionCheck。',
+                        id='users.E001'))
+
+    inspectPatterns(get_resolver().url_patterns)
+    return errors
 
 
 def _getDbGroupPerms():
