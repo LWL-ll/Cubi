@@ -83,12 +83,10 @@ def submitSolution(requestUser, payload):
     code = payload.get('code')
     homeworkId = payload.get('homeworkId')
 
-    problem = Problem.objects.filter(pk=problemId).first()
-    if problem is None:
-        raise NotFound('题目不存在')
-
     validateSubmitType(submitType, homeworkId)
-    homework, frozenProblem = validateHomeworkSubmission(requestUser, homeworkId, problem)
+    homework, item = validateHomeworkSubmission(requestUser, homeworkId, problemId)
+    problem = item.problem
+    frozenProblem = item.getFrozenProblem()
     validateLanguage(frozenProblem, language)
     validateCode(code)
     # 脏数据防护：题目未配置测试点时不接受提交（否则 0 分判题无意义）
@@ -130,7 +128,7 @@ def validateCode(code):
         raise ValidationError(f'代码超过 {CODE_MAX_BYTES // 1024}KB 上限')
 
 
-def validateHomeworkSubmission(requestUser, homeworkId, problem):
+def validateHomeworkSubmission(requestUser, homeworkId, problemId):
     """作业提交组合校验（7.1 第 7 项）
 
     - 作业不存在 → 404；学生不在教学班 → 404（不暴露存在性）
@@ -142,15 +140,17 @@ def validateHomeworkSubmission(requestUser, homeworkId, problem):
         raise NotFound('作业不存在')
     # 对象级校验：学生经「行政班 → 教学班」三跳推导，不在班 404
     getStudentTeachingClass(requestUser, homework.teaching_class_id)
-    item = HomeworkProblem.objects.filter(homework=homework, problem=problem).first()
+    # 只在有权访问的作业中查题，存在但未布置的题与不存在的题响应一致。
+    item = HomeworkProblem.objects.select_related('problem').filter(
+        homework=homework, problem_id=problemId).first()
     if item is None:
-        raise NotFound('题目不属于该作业')
+        raise NotFound('题目不存在')
     now = timezone.now()
     if now < homework.start_at:
         raise ValidationError('作业尚未开始')
     if now > homework.deadline:
         raise ValidationError('作业已截止')
-    return homework, item.getFrozenProblem()
+    return homework, item
 
 
 def checkFrequency(user):

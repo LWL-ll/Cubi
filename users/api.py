@@ -2,6 +2,7 @@
 from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
+from rest_framework.authentication import SessionAuthentication
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -18,6 +19,8 @@ def apiLogin(request):
     前端据此跳转改密页；后端中间件会强制兜底拦截）；失败返回 400。
     登录失败由 django-axes 自动记录，连续失败触发锁定。
     """
+    # 会话认证默认只对已登录用户校验 CSRF；登录入口还必须保护匿名请求。
+    SessionAuthentication().enforce_csrf(request)
     username = request.data.get('username', '').strip()
     password = request.data.get('password', '')
     if not username or not password:

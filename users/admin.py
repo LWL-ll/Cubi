@@ -1,13 +1,41 @@
 from django.contrib import admin
-from django.contrib.auth.admin import UserAdmin
+from django.contrib.auth.admin import GroupAdmin, UserAdmin
 from django.contrib.admin.utils import unquote
+from django.contrib.auth.models import Group
 from django.db import transaction
 
 from .models import SchoolIdentity, StudentProfile, TeacherProfile, User
 
 
+class SuperuserOnlyAdminMixin:
+    """账号和角色管理仅限系统管理员，原生模型权限不能用于提权。"""
+
+    def has_module_permission(self, request):
+        return request.user.is_active and request.user.is_superuser
+
+    def has_view_permission(self, request, obj=None):
+        return request.user.is_active and request.user.is_superuser
+
+    def has_add_permission(self, request):
+        return request.user.is_active and request.user.is_superuser
+
+    def has_change_permission(self, request, obj=None):
+        return request.user.is_active and request.user.is_superuser
+
+    def has_delete_permission(self, request, obj=None):
+        return request.user.is_active and request.user.is_superuser
+
+
+admin.site.unregister(Group)
+
+
+@admin.register(Group)
+class CustomGroupAdmin(SuperuserOnlyAdminMixin, GroupAdmin):
+    pass
+
+
 @admin.register(User)
-class CustomUserAdmin(UserAdmin):
+class CustomUserAdmin(SuperuserOnlyAdminMixin, UserAdmin):
     """后台用户管理：展示姓名、分组，支持建号/改密/分组分配"""
     list_display = ('username', 'name', 'is_superuser', 'is_staff',
                     'is_active', 'list_groups')

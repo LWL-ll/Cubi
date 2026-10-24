@@ -75,12 +75,14 @@ GROUP_PERMISSIONS = {
 
 
 def hasPerm(user, code):
-    """判断用户是否拥有权限码对应的权限；超级用户直接放行"""
-    if user.is_superuser:
-        return True
+    """先校验权限码；已注册权限对超级用户放行。"""
+    if not isinstance(code, str):
+        return False
     codename = PERM_CODES.get(code)
     if codename is None:
         return False
+    if user.is_superuser:
+        return True
     return user.has_perm('users.' + codename)
 
 

@@ -9,10 +9,11 @@ from django.http import HttpResponseForbidden
 from django.shortcuts import redirect, render
 
 from academics.models import ClassMembership, TeachingClass
-from users.permissions import hasPerm
+from users.permissions import hasPerm, requirePerm
 
 from .helpers import (getTeacherTeachingClass, requireStudentGroup,
                       requireTeacherGroup)
+from .homework_service import getStudentHomework
 
 # 教学班详情 Tab 定义：key、显示名、所需权限码（拥有任一即可见）、图标
 TEACHING_CLASS_TABS = [
@@ -90,6 +91,7 @@ def renderTeacherTeachingClassDetail(request, teachingClassId):
 
 
 @requireTeacherGroup
+@requirePerm('homework:bank')
 def renderTeacherQuestionBank(request):
     """教师题库页：公共题库 + 本人个人题（M7 实装，数据走题库 API）
 
@@ -156,12 +158,13 @@ def renderStudentMenuPage(request, key):
 
 
 @requireStudentGroup
+@requirePerm('homework:view')
 def renderStudentHomeworkDetail(request, homeworkId):
     """学生作业详情页：作业内容 + 提交表单 + 教师反馈区
 
-    本轮仅页面骨架（数据由前端假数据渲染），后端就绪后数据改走
-    API（homework:view），本视图只负责渲染页面壳。
+    页面与 API 共用教学班和开始时间校验，越权或未开始一律 404。
     """
+    getStudentHomework(request.user, homeworkId)
     return render(request, 'teaching/student_homework_detail.html', {
         'visibleMenus': getVisibleStudentMenus(request.user),
         'currentKey': 'homeworks',

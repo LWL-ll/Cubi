@@ -11,7 +11,7 @@ from django.http import JsonResponse
 from django.shortcuts import redirect
 
 # 白名单路径前缀：改密闭环所需的最小集合（登录/登出/查自身信息/改密页/
-# 改密 API/后台/静态资源）。admin 放行是因为管理员可在后台直接改密码。
+# 改密 API/静态资源）。后台也必须先完成统一改密流程。
 WHITELIST_PREFIXES = [
     '/api/auth/login/',
     '/api/auth/logout/',
@@ -20,7 +20,6 @@ WHITELIST_PREFIXES = [
     '/login/',
     '/logout/',
     '/change-password/',
-    '/admin/',
     '/static/',
 ]
 
