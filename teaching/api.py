@@ -20,6 +20,7 @@ from users.permissions import IsSuperUser, IsTeacherGroup, PermRequired
 from .helpers import getTeacherTeachingClass
 from .homework_service import (createHomework, deleteHomework,
                                getManageableHomework, getStudentHomework,
+                               getStudentHomeworkProblem,
                                listClassHomeworks, listStudentHomeworks,
                                updateHomework)
 from .problem_service import (createProblem, getManageableProblem,
@@ -194,17 +195,16 @@ class TeacherProblemDetailView(APIView):
 class StudentProblemDetailView(APIView):
     """学生题面详情：GET /api/problems/<id>/
 
-    权限码：homework:view。不按 is_public 过滤——作业里引用的教师
-    个人题学生必须能读（12.1）。返回题面 + 公开样例 + 支持语言；
+    必须携带 ?homeworkId=作业ID，校验所属教学班、开始时间和题目归属。
+    公共题和教师个人题均只在作业上下文可读。返回题面 + 公开样例 + 支持语言；
     永不含 tests/spj_code/判题内部配置（6.2）。
     """
     permission_classes = [PermRequired]
     permCode = 'homework:view'
 
     def get(self, request, problemId):
-        problem = Problem.objects.filter(pk=problemId).first()
-        if problem is None:
-            raise Http404('题目不存在')
+        problem = getStudentHomeworkProblem(
+            request.user, request.query_params.get('homeworkId'), problemId)
         return Response(ProblemStudentSerializer(problem).data)
 
 

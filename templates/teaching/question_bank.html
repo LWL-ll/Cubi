@@ -262,7 +262,7 @@ async function submitProblem() {
         url = `/api/teacher/problems/${editingProblemId}/`;
         method = 'PUT';
     }
-    const res = await fetch(url, {
+    const res = await apiFetch(url, {
         method: method,
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(payload),
@@ -273,17 +273,16 @@ async function submitProblem() {
         return;
     }
     const data = await res.json().catch(() => ({}));
-    const detail = Array.isArray(data.detail) ? data.detail.join('；') : data.detail;
-    errorBox.textContent = detail || ('保存失败：' + res.status);
+    errorBox.textContent = apiErrorMessage(data, '保存失败：' + res.status);
     errorBox.classList.remove('d-none');
 }
 
 async function deleteProblem(problemId) {
     if (!confirm('确认删除该题目？被作业引用的题目无法删除。')) return;
-    const res = await fetch(`/api/teacher/problems/${problemId}/`, {method: 'DELETE'});
+    const res = await apiFetch(`/api/teacher/problems/${problemId}/`, {method: 'DELETE'});
     if (res.status === 204) { resetAndLoad(); return; }
     const data = await res.json().catch(() => ({}));
-    alert(data.detail || '删除失败：' + res.status);
+    alert(apiErrorMessage(data, '删除失败：' + res.status));
 }
 
 document.getElementById('problemSearch').addEventListener('keydown', (event) => {

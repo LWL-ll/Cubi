@@ -3,6 +3,7 @@ from datetime import date
 
 from django.contrib import messages
 from django.contrib.auth.models import Group
+from django.core.exceptions import ValidationError
 from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
 
@@ -13,7 +14,7 @@ from users.permissions import hasPerm, requirePerm
 
 from .models import (AdminClass, ClassMembership, Course, CourseCollege,
                      Department, Major, TeachingClass)
-from .services import enrollStudent
+from .services import createTeachingClass, enrollStudent
 from .student_no import parseStudentNo
 
 # 当前学期：教学班组班默认值（后续做学期管理后再接学期表）
@@ -258,20 +259,15 @@ def showImportResult(request, tip, okList, errList):
 
 
 def setCourseCollegeLeader(cc, teacher):
-    """指定课程组组长：记为该课程×学院的 leader，并加入「课程组」分组和教师池"""
+    """指定组长：模型层统一同步新旧组长的分组及教师池。"""
     cc.leader = teacher
-    cc.save()
-    cc.teachers.add(teacher)
-    teacher.groups.add(getGroup('课程组'))
+    cc.save(update_fields=['leader'])
 
 
 def unsetCourseCollegeLeader(cc):
     """撤销课程组组长：若他不再担任任何课程组组长，则移出「课程组」分组"""
-    leader = cc.leader
     cc.leader = None
-    cc.save()
-    if leader and not CourseCollege.objects.filter(leader=leader).exists():
-        leader.groups.remove(getGroup('课程组'))
+    cc.save(update_fields=['leader'])
 
 
 # ---------- 页面视图 ----------
@@ -412,13 +408,13 @@ def renderCourseCollege(request, courseId, departmentId):
                 if not adminClasses:
                     messages.error(request, '请至少选择一个组成班级')
                 else:
-                    teachingClass = TeachingClass.objects.create(
-                        name=name, term=CURRENT_TERM, course_college=cc)
-                    teachingClass.admin_classes.set(adminClasses)
-                    # 新教学班默认继承课程教师池
-                    teachingClass.teachers.set(cc.teachers.all())
-                    messages.success(request,
-                        f'已创建教学班 {name}（{adminClasses.count()} 个班级，已继承教师池）')
+                    try:
+                        createTeachingClass(cc, name, CURRENT_TERM, adminClasses)
+                    except ValidationError as err:
+                        messages.error(request, '；'.join(err.messages))
+                    else:
+                        messages.success(request,
+                            f'已创建教学班 {name}（{adminClasses.count()} 个班级，已继承教师池）')
         elif action == 'importStudents':
             csvFile = request.FILES.get('file')
             if not csvFile:

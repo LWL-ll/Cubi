@@ -132,10 +132,10 @@ async function loadHomeworks() {
 
 async function deleteHomework(homeworkId) {
     if (!confirm('确认删除该作业？已有提交的作业无法删除。')) return;
-    const res = await fetch(`/api/teacher/homeworks/${homeworkId}/`, {method: 'DELETE'});
+    const res = await apiFetch(`/api/teacher/homeworks/${homeworkId}/`, {method: 'DELETE'});
     if (res.status === 204) { loadHomeworks(); return; }
     const data = await res.json().catch(() => ({}));
-    alert(data.detail || '删除失败：' + res.status);
+    alert(apiErrorMessage(data, '删除失败：' + res.status));
 }
 
 function buildPickerUrl() {
@@ -290,7 +290,7 @@ async function submitHomework() {
         deadline: new Date(deadlineRaw).toISOString(),
         problemIds: problemIds,
     };
-    const res = await fetch(`/api/teacher/teaching-classes/${TEACHING_CLASS_ID}/homeworks/`, {
+    const res = await apiFetch(`/api/teacher/teaching-classes/${TEACHING_CLASS_ID}/homeworks/`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(payload),
@@ -301,7 +301,7 @@ async function submitHomework() {
         return;
     }
     const data = await res.json().catch(() => ({}));
-    errorBox.textContent = data.detail || ('创建失败：' + res.status);
+    errorBox.textContent = apiErrorMessage(data, '创建失败：' + res.status);
     errorBox.classList.remove('d-none');
 }
 

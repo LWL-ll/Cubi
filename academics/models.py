@@ -64,8 +64,7 @@ class AdminClass(models.Model):
 class ClassMembership(models.Model):
     """学生-行政班成员关系：left_at 为空表示当前在班（转班历史留痕）
 
-    服务层约束（SQLite 无部分唯一索引，换 MySQL 后补数据库级约束）：
-    同一学生同时只有一个 left_at IS NULL 的成员关系
+    条件唯一约束保证同一学生同时只有一个当前成员关系（SQLite/PG）。
     """
     student_profile = models.ForeignKey(
         'users.StudentProfile', verbose_name='学生', on_delete=models.CASCADE,
@@ -79,6 +78,14 @@ class ClassMembership(models.Model):
     class Meta:
         verbose_name = '班级成员'
         verbose_name_plural = '班级成员'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['student_profile'], condition=models.Q(left_at__isnull=True),
+                name='uniq_current_student_membership'),
+            models.CheckConstraint(
+                condition=models.Q(left_at__isnull=True) | models.Q(left_at__gte=models.F('joined_at')),
+                name='membership_dates_ordered'),
+        ]
 
     def __str__(self):
         return f'{self.student_profile.identity.school_number} → {self.admin_class.name}'
@@ -131,6 +138,29 @@ class CourseCollege(models.Model):
     def __str__(self):
         return f'{self.course.name} - {self.department.name}'
 
+    def save(self, *args, **kwargs):
+        from django.contrib.auth import get_user_model
+        from django.db import router, transaction
+        from .services import syncCourseTeamMembership
+
+        using = kwargs.get('using') or router.db_for_write(type(self), instance=self)
+        with transaction.atomic(using=using):
+            # 先串行同课程的更新，再按用户锁定跨课程的任职变更。
+            Course.objects.using(using).filter(pk=self.course_id).update(id=models.F('id'))
+            oldLeaderId = type(self).objects.using(using).filter(pk=self.pk) \
+                .values_list('leader_id', flat=True).first()
+            leaderIds = sorted({uid for uid in (oldLeaderId, self.leader_id) if uid})
+            for uid in leaderIds:
+                get_user_model().objects.using(using).filter(pk=uid).update(id=models.F('id'))
+            super().save(*args, **kwargs)
+            newLeaderId = type(self).objects.using(using).filter(pk=self.pk) \
+                .values_list('leader_id', flat=True).get()
+            if oldLeaderId != newLeaderId:
+                if newLeaderId:
+                    self.teachers.add(newLeaderId)
+                for uid in leaderIds:
+                    syncCourseTeamMembership(uid, using)
+
 
 class TeachingClass(models.Model):
     """教学班（授课单位）：由 1~N 个行政班按学期组成（行政班是原子单位，不拆分）
@@ -159,3 +189,16 @@ class TeachingClass(models.Model):
 
     def __str__(self):
         return f'{self.name}（{self.term}）'
+
+    def save(self, *args, **kwargs):
+        from django.db import router, transaction
+        from .services import lockTeachingCourse, validateTeachingClasses
+
+        using = kwargs.get('using') or router.db_for_write(type(self), instance=self)
+        with transaction.atomic(using=using):
+            lockTeachingCourse(self.course_college, using)
+            if self.pk:
+                validateTeachingClasses(
+                    self.course_college, self.term, self.admin_classes.all(),
+                    excludeId=self.pk, using=using)
+            super().save(*args, **kwargs)

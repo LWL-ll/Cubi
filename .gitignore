@@ -4,6 +4,7 @@ __pycache__/
 
 # Django 本地数据（开发库不入库，环境各自重建）
 db.sqlite3
+db.sqlite3.backup-*
 
 # 用户上传文件（运行时生成）
 media/

@@ -356,6 +356,7 @@ class TeachingClassApiTests(OfficeApiTestBase):
         self.assertEqual(resp.status_code, 403)
 
     def test_create_success_inherits_teacher_pool(self):
+        self.teachingClass.admin_classes.remove(self.adminClass)
         resp = self._call(
             TeachingClassListView, self.adminUser, method='post',
             data={'name': '矩阵二班', 'courseCollegeId': self.cc.id,
@@ -364,6 +365,24 @@ class TeachingClassApiTests(OfficeApiTestBase):
         teachingClass = TeachingClass.objects.get(name='矩阵二班')
         # 新教学班默认继承课程教师池
         self.assertEqual(list(teachingClass.teachers.all()), [self.teacher])
+
+    def test_duplicate_admin_class_same_course_term_rejected(self):
+        resp = self._call(
+            TeachingClassListView, self.adminUser, method='post',
+            data={'name': '重复组班', 'courseCollegeId': self.cc.id,
+                  'adminClassIds': [self.adminClass.id]})
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(TeachingClass.objects.filter(name='重复组班').exists())
+
+    def test_add_admin_class_already_grouped_rejected(self):
+        target = TeachingClass.objects.create(
+            name='待组班', term=self.teachingClass.term, course_college=self.cc)
+        resp = self._call(
+            TeachingClassDetailView, self.adminUser, method='post',
+            data={'action': 'addAdminClass', 'adminClassId': self.adminClass.id},
+            teachingClassId=target.id)
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(target.admin_classes.exists())
 
     def test_create_duplicate_name_400(self):
         resp = self._call(

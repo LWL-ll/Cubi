@@ -201,6 +201,20 @@ class JudgeTaskTests(TestCase):
         self.assertEqual(self.mockRun.call_count, 0)
         self.assertEqual(self.mockDelete.call_count, 0)
 
+    def test_changed_problem_version_is_not_repeat(self):
+        from .tasks_judge import detectRepeat
+
+        self.makeSubmission(fingerprint='same-fp')
+        changed = self.makeSubmission(fingerprint='same-fp', problem_revision=2)
+        self.assertIsNone(detectRepeat(changed))
+        newTests = self.makeSubmission(fingerprint='same-fp', tests_hash='new-hash')
+        self.assertIsNone(detectRepeat(newTests))
+        otherLanguage = self.makeSubmission(fingerprint='same-fp', language='python')
+        self.assertIsNone(detectRepeat(otherLanguage))
+        otherHomework = self.makeSubmission(fingerprint='same-fp', homework=self.homework,
+                                            submit_type=Submission.SUBMIT_HOMEWORK)
+        self.assertIsNone(detectRepeat(otherHomework))
+
     def test_pythonSkipsCompile(self):
         """Python：无编译请求，代码逐点内联"""
         submission = self.makeSubmission(language='python')

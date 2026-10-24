@@ -207,7 +207,7 @@ async function submitCode(problemId) {
     const code = document.getElementById('code-' + problemId).value;
     const language = document.getElementById('lang-' + problemId).value;
     if (!code.trim()) { errorBox.textContent = '请先输入代码'; errorBox.classList.remove('d-none'); return; }
-    const res = await fetch('/api/submissions/', {
+    const res = await apiFetch('/api/submissions/', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
@@ -220,8 +220,7 @@ async function submitCode(problemId) {
     });
     if (res.ok) { loadDetail(); return; }
     const data = await res.json().catch(() => ({}));
-    const detail = Array.isArray(data.detail) ? data.detail.join('；') : data.detail;
-    errorBox.textContent = detail || ('提交失败：' + res.status);
+    errorBox.textContent = apiErrorMessage(data, '提交失败：' + res.status);
     errorBox.classList.remove('d-none');
 }
 

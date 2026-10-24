@@ -1,4 +1,7 @@
 from django.contrib import admin
+from django import forms
+
+from .services import validateTeachingClasses
 
 from .models import (AdminClass, ClassMembership, Course, CourseCollege,
                      Department, Major, TeachingClass)
@@ -50,9 +53,28 @@ class CourseCollegeAdmin(admin.ModelAdmin):
     search_fields = ('course__name', 'department__name')
 
 
+class TeachingClassForm(forms.ModelForm):
+    class Meta:
+        model = TeachingClass
+        fields = '__all__'
+
+    def clean(self):
+        data = super().clean()
+        cc = data.get('course_college')
+        classes = data.get('admin_classes')
+        if cc and data.get('term') and classes is not None:
+            if not classes:
+                self.add_error('admin_classes', '教学班至少包含一个行政班')
+            else:
+                validateTeachingClasses(cc, data['term'], classes,
+                                        excludeId=self.instance.pk)
+        return data
+
+
 @admin.register(TeachingClass)
 class TeachingClassAdmin(admin.ModelAdmin):
     """后台教学班管理"""
     list_display = ('name', 'term', 'course_college')
     list_filter = ('term',)
     search_fields = ('name',)
+    form = TeachingClassForm

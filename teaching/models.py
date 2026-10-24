@@ -15,10 +15,20 @@ OJ 判题五张表（docs/OJ对接设计.md 第九章）：
   教师改题不改变已受理提交的判题标准，结果可复现
 - 测试用例 JSON 存 DB 永不下发（隐藏测试数据不经过前端与 API 响应）
 """
+from copy import deepcopy
+from types import SimpleNamespace
+
 from django.conf import settings
 from django.db import models
 
 from academics.models import TeachingClass
+
+
+def buildProblemSnapshot(problem):
+    """组卷时冻结完整题目，JSON 中的隐藏数据仅供服务端判题。"""
+    return {field: deepcopy(getattr(problem, field)) for field in (
+        'title', 'statement_md', 'samples', 'languages', 'tests',
+        'tier', 'compare_strategy', 'has_spj', 'spj_code')}
 
 
 class Problem(models.Model):
@@ -132,6 +142,7 @@ class HomeworkProblem(models.Model):
                                 verbose_name='题目', related_name='homeworks')
     order = models.PositiveSmallIntegerField('题序', default=0)
     problem_revision = models.PositiveIntegerField('选题时修订号')
+    problem_snapshot = models.JSONField('作业题目完整快照', default=dict)
 
     class Meta:
         verbose_name = '作业题目'
@@ -148,6 +159,17 @@ class HomeworkProblem(models.Model):
 
     def __str__(self):
         return f'{self.homework.title} #{self.order} {self.problem.title}'
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and not self.problem_snapshot:
+            self.problem_snapshot = buildProblemSnapshot(self.problem)
+            self.problem_revision = self.problem.revision
+        super().save(*args, **kwargs)
+
+    def getFrozenProblem(self):
+        """复用题目白名单序列化器和判题校验，不回退读取实时题目。"""
+        return SimpleNamespace(id=self.problem_id, revision=self.problem_revision,
+                               **deepcopy(self.problem_snapshot))
 
 
 class Submission(models.Model):

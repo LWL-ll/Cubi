@@ -442,21 +442,16 @@ class ProblemApiTests(TestCase):
     # ---------- 学生题面 ----------
 
     def test_student_view_problem_whitelist(self):
-        """学生读题：白名单字段齐全，不含 tests/spjCode/判题配置（6.2）"""
+        """公共题也不能脱离作业上下文访问。"""
         self._login(self.student)
         resp = self.client.get(f'/api/problems/{self.publicProblem.id}/')
-        self.assertEqual(resp.status_code, 200)
-        for field in ('id', 'title', 'statementMd', 'samples', 'languages'):
-            self.assertIn(field, resp.data)
-        for secret in ('tests', 'spjCode', 'spj_code', 'tier',
-                       'compareStrategy', 'compare_strategy'):
-            self.assertNotIn(secret, resp.data)
+        self.assertEqual(resp.status_code, 404)
 
     def test_student_view_teacher_personal_problem(self):
-        """学生可读作业里引用的教师个人题（不按 is_public 过滤，12.1）"""
+        """个人题不能脱离作业上下文访问。"""
         self._login(self.student)
         resp = self.client.get(f'/api/problems/{self.personalProblem.id}/')
-        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 404)
 
     def test_student_view_missing_problem_404(self):
         """题不存在 → 404"""

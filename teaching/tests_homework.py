@@ -404,3 +404,76 @@ class HomeworkApiTests(TestCase):
         self.assertEqual(anon.post(
             f'/api/teacher/teaching-classes/{self.teachingClass.id}/homeworks/',
             self._createPayload(), format='json').status_code, 403)
+
+    def test_problem_access_requires_own_started_homework(self):
+        self._login(self.teacher)
+        self._createHomework(problemIds=[self.personalProblem.id, self.publicProblem.id])
+        homework = Homework.objects.get(title='第一次作业')
+        self._login(self.student)
+        for problem in (self.personalProblem, self.publicProblem):
+            url = f'/api/problems/{problem.id}/'
+            self.assertEqual(self.client.get(url).status_code, 404)
+            response = self.client.get(url, {'homeworkId': homework.id})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(set(response.data),
+                             {'id', 'title', 'statementMd', 'samples', 'languages'})
+            self.assertEqual(self.client.get(url, {'homeworkId': 'bad'}).status_code, 404)
+        url = f'/api/problems/{self.personalProblem.id}/'
+        self._login(self.otherStudent)
+        self.assertEqual(self.client.get(url, {'homeworkId': homework.id}).status_code, 404)
+        self._login(self.student)
+        homework.start_at = self.now + timedelta(hours=1)
+        homework.save()
+        self.assertEqual(self.client.get(url, {'homeworkId': homework.id}).status_code, 404)
+        homework.start_at = self.now - timedelta(days=2)
+        homework.deadline = self.now - timedelta(days=1)
+        homework.save()
+        self.assertEqual(self.client.get(url, {'homeworkId': homework.id}).status_code, 200)
+        self.assertEqual(self.client.get(f'/api/problems/{self.otherPersonal.id}/',
+                                        {'homeworkId': homework.id}).status_code, 404)
+
+    def test_editing_bank_problem_does_not_change_homework(self):
+        self._login(self.teacher)
+        self._createHomework()
+        homework = Homework.objects.get(title='第一次作业')
+        item = homework.problems.get()
+        original = item.problem_snapshot
+        self.personalProblem.title = '新版标题'
+        self.personalProblem.statement_md = '新版题面'
+        self.personalProblem.samples = [{'input': 'new', 'output': 'new'}]
+        self.personalProblem.languages = ['python']
+        self.personalProblem.tests = [{'input': 'SECRET_NEW', 'output': 'SECRET_EXPECTED', 'points': 50}]
+        self.personalProblem.spj_code = 'SECRET_SPJ'
+        self.personalProblem.has_spj = True
+        self.personalProblem.tier = 'advanced'
+        self.personalProblem.revision = 2
+        self.personalProblem.save()
+        teacherData = self.client.get(f'/api/teacher/homeworks/{homework.id}/').data['problems'][0]
+        self.assertEqual(teacherData['title'], original['title'])
+        self.assertEqual(teacherData['tier'], original['tier'])
+        self.assertEqual(teacherData['languages'], original['languages'])
+        self.assertEqual(teacherData['problemRevision'], 1)
+        self._login(self.student)
+        detail = self.client.get(f'/api/homeworks/{homework.id}/')
+        problem = detail.data['problems'][0]
+        self.assertEqual(problem['title'], original['title'])
+        self.assertEqual(problem['statementMd'], original['statement_md'])
+        self.assertEqual(problem['samples'], original['samples'])
+        self.assertEqual(problem['languages'], original['languages'])
+        direct = self.client.get(f'/api/problems/{self.personalProblem.id}/',
+                                 {'homeworkId': homework.pk})
+        self.assertEqual(direct.data, problem)
+        for secret in ('problem_snapshot', 'tests', 'spj_code', 'SECRET_NEW', 'SECRET_SPJ'):
+            self.assertNotIn(secret, detail.content.decode())
+
+    def test_title_only_update_keeps_existing_snapshot(self):
+        self._login(self.teacher)
+        self._createHomework()
+        homework = Homework.objects.get(title='第一次作业')
+        original = homework.problems.get().problem_snapshot
+        self.personalProblem.title = '新题目'
+        self.personalProblem.save()
+        response = self.client.put(f'/api/teacher/homeworks/{homework.id}/',
+                                   self._createPayload(title='改作业名'), format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(homework.problems.get().problem_snapshot, original)

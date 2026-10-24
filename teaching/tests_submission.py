@@ -82,11 +82,13 @@ class SubmissionApiTests(TestCase):
         self.addCleanup(self.asyncTaskPatcher.stop)
         self.client = APIClient()
         self.client.force_login(self.student)
+        self.homework = self._openHomework()
 
     def _payload(self, **kwargs):
         payload = {
             'problemId': self.problem.id,
-            'submitType': 'practice',
+            'submitType': 'homework',
+            'homeworkId': self.homework.id,
             'language': 'c',
             'code': 'int main() { return 0; }',
         }
@@ -129,14 +131,14 @@ class SubmissionApiTests(TestCase):
 
     # ---------- 受理 ----------
 
-    def test_practiceSubmitAccepted(self):
-        """练习提交受理成功：200 submissionId + queued + JudgeTask pending"""
+    def test_homeworkSubmitQueued(self):
+        """作业提交受理成功：200 submissionId + queued + JudgeTask pending"""
         resp = self._submit()
         self.assertEqual(resp.status_code, 200)
         submissionId = resp.json()['submissionId']
         submission = Submission.objects.get(pk=submissionId)
         self.assertEqual(submission.status, Submission.STATUS_QUEUED)
-        self.assertEqual(submission.submit_type, Submission.SUBMIT_PRACTICE)
+        self.assertEqual(submission.submit_type, Submission.SUBMIT_HOMEWORK)
         self.assertEqual(submission.user, self.student)
         self.assertEqual(submission.total_score, 100)
         task = submission.judge_task
@@ -178,6 +180,26 @@ class SubmissionApiTests(TestCase):
         self.assertEqual(submission.judge_snapshot['tests'], oldTests)
         self.assertEqual(submission.problem_revision, 1)
         self.assertEqual(submission.tests_hash, oldHash)
+
+    def test_submit_uses_homework_version_after_bank_edit(self):
+        from teaching.submission_service import calcTestsHash
+
+        original = self.homework.problems.get().problem_snapshot
+        self.problem.tests = []
+        self.problem.languages = ['python']
+        self.problem.tier = 'advanced'
+        self.problem.compare_strategy = 'loose'
+        self.problem.spj_code = 'NEW_CHECKER'
+        self.problem.revision = 5
+        self.problem.save()
+        response = self._submit(language='c')
+        self.assertEqual(response.status_code, 200)
+        submission = Submission.objects.get(pk=response.data['submissionId'])
+        self.assertEqual(submission.problem_revision, 1)
+        self.assertEqual(submission.total_score, 100)
+        self.assertEqual(submission.tests_hash, calcTestsHash(original['tests']))
+        for field in ('tests', 'tier', 'compare_strategy', 'spj_code'):
+            self.assertEqual(submission.judge_snapshot[field], original[field])
 
     # ---------- 限流 ----------
 
@@ -225,6 +247,8 @@ class SubmissionApiTests(TestCase):
         noTestsProblem = Problem.objects.create(
             title='无测试点', statement_md='', tests=[],
             languages=['c'], owner=self.teacher)
+        HomeworkProblem.objects.create(homework=self.homework, problem=noTestsProblem,
+                                       order=2, problem_revision=1)
         self.assertEqual(
             self._submit(problemId=noTestsProblem.id).status_code, 400)  # 无测试点
         self.assertEqual(self._submit(problemId=99999).status_code, 404)  # 题不存在
@@ -267,7 +291,7 @@ class SubmissionApiTests(TestCase):
             self._submit(submitType='homework', homeworkId=otherClassHomework.id)
             .status_code, 404)
         self.assertEqual(
-            self._submit(submitType='homework').status_code, 400)  # 缺 homeworkId
+            self._submit(submitType='homework', homeworkId=None).status_code, 400)
         self.assertEqual(
             self._submit(submitType='practice', homeworkId=homework.id)
             .status_code, 400)  # practice 带 homeworkId
@@ -282,7 +306,11 @@ class SubmissionApiTests(TestCase):
         self._submit()
         otherClient = APIClient()
         otherClient.force_login(self.otherStudent)
-        otherClient.post('/api/submissions/', self._payload(), format='json')
+        otherHomework = self._openHomework()
+        otherHomework.teaching_class = self.otherTeachingClass
+        otherHomework.save()
+        otherClient.post('/api/submissions/', self._payload(homeworkId=otherHomework.id),
+                         format='json')
         resp = self.client.get('/api/submissions/')
         self.assertEqual(resp.status_code, 200)
         results = resp.json()['results']
@@ -323,7 +351,19 @@ class SubmissionApiTests(TestCase):
     def test_problemDeletedTitleNull(self):
         """题目删除后提交保留：列表 problemId/problemTitle 为 null"""
         self._submit()
+        HomeworkProblem.objects.filter(problem=self.problem).delete()
         self.problem.delete()
         data = self.client.get('/api/submissions/').json()['results'][0]
         self.assertIsNone(data['problemId'])
         self.assertIsNone(data['problemTitle'])
+
+    def test_practiceRejectedWithoutRecordsOrDispatch(self):
+        for isPublic in (True, False):
+            self.problem.is_public = isPublic
+            self.problem.save()
+            for payload in ({'submitType': 'practice', 'homeworkId': None},
+                            {'submitType': 'practice'}, {'homeworkId': None}):
+                self.assertEqual(self._submit(**payload).status_code, 400)
+        self.assertFalse(Submission.objects.exists())
+        self.assertFalse(JudgeTask.objects.exists())
+        self.mockAsyncTask.assert_not_called()

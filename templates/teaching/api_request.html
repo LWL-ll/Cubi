@@ -1,0 +1,17 @@
+<script>
+// CSRF Cookie 为 HttpOnly，从页面隐藏域读取 token。
+function apiFetch(url, options = {}) {
+    const headers = new Headers(options.headers);
+    const method = (options.method || 'GET').toUpperCase();
+    if (!['GET', 'HEAD', 'OPTIONS', 'TRACE'].includes(method)) {
+        headers.set('X-CSRFToken', document.querySelector('[name=csrfmiddlewaretoken]').value);
+    }
+    return fetch(url, {...options, headers, mode: 'same-origin', credentials: 'same-origin'});
+}
+
+function apiErrorMessage(data, fallback) {
+    if (typeof data === 'string') return data || fallback;
+    if (Array.isArray(data)) return data.join('；') || fallback;
+    return data.error || data.detail || fallback;
+}
+</script>

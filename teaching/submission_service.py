@@ -78,7 +78,7 @@ def submitSolution(requestUser, payload):
     返回新 Submission 的 id；校验不过抛 DRF 异常。
     """
     problemId = payload.get('problemId')
-    submitType = payload.get('submitType', Submission.SUBMIT_PRACTICE)
+    submitType = payload.get('submitType', Submission.SUBMIT_HOMEWORK)
     language = payload.get('language')
     code = payload.get('code')
     homeworkId = payload.get('homeworkId')
@@ -88,15 +88,12 @@ def submitSolution(requestUser, payload):
         raise NotFound('题目不存在')
 
     validateSubmitType(submitType, homeworkId)
-    validateLanguage(problem, language)
+    homework, frozenProblem = validateHomeworkSubmission(requestUser, homeworkId, problem)
+    validateLanguage(frozenProblem, language)
     validateCode(code)
     # 脏数据防护：题目未配置测试点时不接受提交（否则 0 分判题无意义）
-    if not problem.tests:
+    if not frozenProblem.tests:
         raise ValidationError('题目尚未配置测试点，请联系教师')
-
-    homework = None
-    if submitType == Submission.SUBMIT_HOMEWORK:
-        homework = validateHomeworkSubmission(requestUser, homeworkId, problem)
 
     # 频率 count 与建表必须同事务：并发提交下 count 与插入串行化
     # （SQLite 单写者天然串行；切 PG 后需按用户行 select_for_update 锁）
@@ -104,20 +101,17 @@ def submitSolution(requestUser, payload):
         checkFrequency(requestUser)
         checkQueueLimit(requestUser)
         submission = createSubmissionRecord(
-            requestUser, problem, homework, language, code, submitType)
+            requestUser, problem, homework, language, code, submitType, frozenProblem)
         dispatchJudgeTask(submission.id)
     return submission.id
 
 
 def validateSubmitType(submitType, homeworkId):
     """提交类型白名单 + 与作业参数的一致性（7.1 第 6、7 项）"""
-    if submitType not in {Submission.SUBMIT_PRACTICE,
-                          Submission.SUBMIT_HOMEWORK}:
-        raise ValidationError('不支持的提交类型')
-    if submitType == Submission.SUBMIT_HOMEWORK and homeworkId is None:
+    if submitType != Submission.SUBMIT_HOMEWORK:
+        raise ValidationError('仅允许提交教师布置的作业')
+    if homeworkId is None:
         raise ValidationError('作业提交必须指定作业')
-    if submitType != Submission.SUBMIT_HOMEWORK and homeworkId is not None:
-        raise ValidationError('非作业提交不能指定作业')
 
 
 def validateLanguage(problem, language):
@@ -148,15 +142,15 @@ def validateHomeworkSubmission(requestUser, homeworkId, problem):
         raise NotFound('作业不存在')
     # 对象级校验：学生经「行政班 → 教学班」三跳推导，不在班 404
     getStudentTeachingClass(requestUser, homework.teaching_class_id)
-    if not HomeworkProblem.objects.filter(
-            homework=homework, problem=problem).exists():
+    item = HomeworkProblem.objects.filter(homework=homework, problem=problem).first()
+    if item is None:
         raise NotFound('题目不属于该作业')
     now = timezone.now()
     if now < homework.start_at:
         raise ValidationError('作业尚未开始')
     if now > homework.deadline:
         raise ValidationError('作业已截止')
-    return homework
+    return homework, item.getFrozenProblem()
 
 
 def checkFrequency(user):
@@ -180,7 +174,8 @@ def checkQueueLimit(user):
         raise ValidationError('排队中的提交过多，请等待判题完成后再试')
 
 
-def createSubmissionRecord(user, problem, homework, language, code, submitType):
+def createSubmissionRecord(user, problem, homework, language, code, submitType,
+                           frozenProblem):
     """事务内建表：Submission(status=queued, 完整快照) + JudgeTask(pending)"""
     submission = Submission.objects.create(
         user=user,
@@ -191,10 +186,10 @@ def createSubmissionRecord(user, problem, homework, language, code, submitType):
         fingerprint=calcFingerprint(code),
         submit_type=submitType,
         status=Submission.STATUS_QUEUED,
-        total_score=calcTotalScore(problem.tests),
-        problem_revision=problem.revision,
-        tests_hash=calcTestsHash(problem.tests),
-        judge_snapshot=buildJudgeSnapshot(problem),
+        total_score=calcTotalScore(frozenProblem.tests),
+        problem_revision=frozenProblem.revision,
+        tests_hash=calcTestsHash(frozenProblem.tests),
+        judge_snapshot=buildJudgeSnapshot(frozenProblem),
     )
     JudgeTask.objects.create(submission=submission)
     return submission

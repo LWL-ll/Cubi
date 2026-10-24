@@ -7,6 +7,8 @@
 V2 说明：教师任课挂教学班（不再挂行政班），
 教学班管理（组班/教师分配/解散）统一在 TeachingClass* 视图。
 """
+from django.core.exceptions import ValidationError
+from django.db import transaction
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -14,6 +16,7 @@ from users.models import User
 from users.permissions import PermRequired, hasPerm
 
 from .models import AdminClass, Course, CourseCollege, Department, TeachingClass
+from .services import createTeachingClass
 from .serializers import (AdminClassSerializer, CourseCollegeSerializer,
                           CourseSerializer, DepartmentSerializer,
                           TeachingClassSerializer)
@@ -255,11 +258,10 @@ class TeachingClassListView(APIView):
         if TeachingClass.objects.filter(
                 course_college=cc, term=term, name=name).exists():
             return Response({'error': f'同学期已存在同名教学班 {name}'}, status=400)
-        teachingClass = TeachingClass.objects.create(
-            name=name, term=term, course_college=cc)
-        teachingClass.admin_classes.set(adminClasses)
-        # 新教学班默认继承课程教师池（与批量导入教师的自动分配行为一致）
-        teachingClass.teachers.set(cc.teachers.all())
+        try:
+            teachingClass = createTeachingClass(cc, name, term, adminClasses)
+        except ValidationError as err:
+            return Response({'error': '；'.join(err.messages)}, status=400)
         return Response(TeachingClassSerializer(teachingClass).data, status=201)
 
 
@@ -307,7 +309,11 @@ class TeachingClassDetailView(APIView):
                 if not cc.admin_classes.filter(id=adminClass.id).exists():
                     return Response(
                         {'error': f'班级 {adminClass.name} 不在本课程×学院中'}, status=400)
-                teachingClass.admin_classes.add(adminClass)
+                try:
+                    with transaction.atomic():
+                        teachingClass.admin_classes.add(adminClass)
+                except ValidationError as err:
+                    return Response({'error': '；'.join(err.messages)}, status=400)
                 return Response({'message': f'已添加班级 {adminClass.name}'})
             # removeAdminClass：教学班至少保留一个组成班级
             if teachingClass.admin_classes.count() <= 1:

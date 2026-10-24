@@ -38,7 +38,7 @@
                     {# 教师（含课程组组长，组长同时也是教师）显示教师工作台入口 #}
                     {% if groupKey == 'teacher' or groupKey == 'course_team' %}
                     <div class="mb-2">
-                        <a href="{% url 'teacher_clazz_list' %}" class="btn btn-primary w-100 py-2">👩‍🏫 进入教师工作台</a>
+                        <a href="{% url 'teacher_teaching_class_list' %}" class="btn btn-primary w-100 py-2">👩‍🏫 进入教师工作台</a>
                     </div>
                     {% endif %}
                     {# 学生显示学生工作台入口 #}

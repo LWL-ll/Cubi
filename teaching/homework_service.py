@@ -24,7 +24,8 @@ from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import ValidationError
 
 from academics.models import TeachingClass
-from teaching.models import Homework, HomeworkProblem, Problem, Submission
+from teaching.models import (Homework, HomeworkProblem, Problem, Submission,
+                             buildProblemSnapshot)
 from teaching.helpers import getStudentTeachingClass
 from users.models import SchoolIdentity
 
@@ -110,7 +111,8 @@ def createHomework(user, teachingClass, payload):
         HomeworkProblem.objects.bulk_create([
             HomeworkProblem(homework=homework, problem=problem,
                             order=index,
-                            problem_revision=problem.revision)
+                            problem_revision=problem.revision,
+                            problem_snapshot=buildProblemSnapshot(problem))
             for index, problem in enumerate(problems)
         ])
     return homework
@@ -156,7 +158,8 @@ def updateHomework(user, homework, payload):
             HomeworkProblem.objects.bulk_create([
                 HomeworkProblem(homework=homework, problem=problem,
                                 order=index,
-                                problem_revision=problem.revision)
+                                problem_revision=problem.revision,
+                                problem_snapshot=buildProblemSnapshot(problem))
                 for index, problem in enumerate(problems)
             ])
         homework.title = title
@@ -222,3 +225,15 @@ def listStudentHomeworks(user):
     return annotateStudentStats(getStudentHomeworkQuery(user), user) \
         .select_related('teaching_class') \
         .order_by('-created_at')
+
+
+def getStudentHomeworkProblem(user, homeworkId, problemId):
+    """题面只在已开始且学生所属的作业中可见，截止后仍可回看。"""
+    if not str(homeworkId or '').isdigit():
+        raise Http404('题目不存在')
+    homework = getStudentHomework(user, homeworkId)
+    item = homework.problems.filter(
+        problem_id=problemId).first()
+    if item is None:
+        raise Http404('题目不存在')
+    return item.getFrozenProblem()

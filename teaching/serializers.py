@@ -162,13 +162,13 @@ class HomeworkProblemItemSerializer(serializers.Serializer):
     教师端可见。problemId 是题目主键（非中间表主键）。
     """
     problemId = serializers.IntegerField(source='problem_id', read_only=True)
-    title = serializers.CharField(read_only=True)
+    title = serializers.CharField(source='problem_snapshot.title', read_only=True)
     order = serializers.IntegerField(read_only=True)
     problemRevision = serializers.IntegerField(source='problem_revision',
                                                read_only=True)
-    tier = serializers.CharField(read_only=True)
-    languages = serializers.JSONField(read_only=True)
-    hasSpj = serializers.BooleanField(source='has_spj', read_only=True)
+    tier = serializers.CharField(source='problem_snapshot.tier', read_only=True)
+    languages = serializers.JSONField(source='problem_snapshot.languages', read_only=True)
+    hasSpj = serializers.BooleanField(source='problem_snapshot.has_spj', read_only=True)
 
 
 class HomeworkDetailSerializer(HomeworkListSerializer):
@@ -246,5 +246,5 @@ class HomeworkStudentDetailSerializer(serializers.Serializer):
 
     def get_problems(self, obj):
         """题目列表按题序输出，复用学生题面白名单"""
-        problems = [item.problem for item in obj.problems.all()]
+        problems = [item.getFrozenProblem() for item in obj.problems.all()]
         return ProblemStudentSerializer(problems, many=True).data

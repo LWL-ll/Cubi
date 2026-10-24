@@ -208,10 +208,12 @@ def checkEligibility(submission):
 
 
 def detectRepeat(submission):
-    """重复检测（8.2 阶段 2）：同用户同题最近 20 条提交中找相同 fingerprint
+    """同作业、语言和题目版本内检测重复，版本变化后允许重新判题。
     返回被重复的提交对象，未命中返回 None"""
     recent = Submission.objects.filter(
         user_id=submission.user_id, problem_id=submission.problem_id,
+        homework_id=submission.homework_id, language=submission.language,
+        problem_revision=submission.problem_revision, tests_hash=submission.tests_hash,
         created_at__lt=submission.created_at).exclude(pk=submission.pk) \
         .order_by('-created_at')[:REPEAT_SCAN_COUNT]
     for previous in recent:
