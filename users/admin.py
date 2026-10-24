@@ -1,5 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
+from django.contrib.admin.utils import unquote
+from django.db import transaction
 
 from .models import SchoolIdentity, StudentProfile, TeacherProfile, User
 
@@ -11,6 +13,19 @@ class CustomUserAdmin(UserAdmin):
                     'is_active', 'list_groups')
     list_filter = ('is_superuser', 'is_staff', 'is_active', 'groups')
     search_fields = ('username', 'name')
+
+    @transaction.atomic
+    def user_change_password(self, request, id, form_url=''):
+        target = self.get_object(request, unquote(id)) if request.method == 'POST' else None
+        oldHash = target.password if target is not None else None
+        response = super().user_change_password(request, id, form_url)
+        # Django 负责权限、表单校验和旧会话失效；这里只补重置后的改密标记。
+        # 不能只看重定向：后台拒绝冲突表单时也会返回 302。
+        if target is not None and target.pk != request.user.pk and response.status_code == 302:
+            target.refresh_from_db(fields=['password'])
+            if target.password != oldHash and target.has_usable_password():
+                type(target).objects.filter(pk=target.pk).update(must_change_password=True)
+        return response
 
     def list_groups(self, obj):
         """列表页显示用户所属分组名（可多组）"""

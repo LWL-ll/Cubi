@@ -280,3 +280,89 @@ class PasswordLifecycleTests(TestCase):
         self.assertEqual(resp.status_code, 400)
         self.mustUser.refresh_from_db()
         self.assertTrue(self.mustUser.must_change_password)
+
+
+class AdminPasswordResetTests(TestCase):
+    """从真实后台改密入口验证重置、会话失效及强制改密闭环。"""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.adminUser = User.objects.create_superuser(username='reset-admin', password=PASSWORD)
+        cls.teacher = User.objects.create_user(username='reset-teacher', password=PASSWORD)
+        cls.teacher.groups.add(Group.objects.get(name='教师'))
+
+    def setUp(self):
+        self.client.force_login(self.adminUser)
+
+    def resetPassword(self, user=None, **overrides):
+        payload = {'password1': 'ResetPass123!', 'password2': 'ResetPass123!',
+                   'usable_password': 'true'}
+        payload.update(overrides)
+        target = user or self.teacher
+        return self.client.post(f'/admin/users/user/{target.pk}/password/', payload)
+
+    def test_reset_requires_change_and_invalidates_old_password_and_sessions(self):
+        oldClients = [APIClient(), APIClient()]
+        for client in oldClients:
+            response = client.post('/api/auth/login/',
+                {'username': self.teacher.username, 'password': PASSWORD}, format='json')
+            self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.resetPassword().status_code, 302)
+        self.teacher.refresh_from_db()
+        self.assertTrue(self.teacher.must_change_password)
+        self.assertFalse(self.teacher.check_password(PASSWORD))
+        self.assertTrue(self.teacher.check_password('ResetPass123!'))
+        for client in oldClients:
+            self.assertEqual(client.get('/api/auth/me/').status_code, 403)
+        self.assertEqual(APIClient().post('/api/auth/login/',
+            {'username': self.teacher.username, 'password': PASSWORD}, format='json').status_code, 400)
+        client = APIClient()
+        response = client.post('/api/auth/login/',
+            {'username': self.teacher.username, 'password': 'ResetPass123!'}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data['mustChangePassword'])
+        self.assertEqual(client.get('/api/teacher/teaching-classes/').status_code, 403)
+        response = client.post('/api/auth/change-password/',
+            {'oldPassword': 'ResetPass123!', 'newPassword': 'PersonalPass456!'}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.teacher.refresh_from_db()
+        self.assertFalse(self.teacher.must_change_password)
+        self.assertTrue(self.teacher.check_password('PersonalPass456!'))
+        self.assertEqual(client.get('/api/teacher/teaching-classes/').status_code, 200)
+        self.assertEqual(self.client.get('/admin/').status_code, 200)
+
+    def test_admin_changing_own_password_keeps_session_without_forced_change(self):
+        self.assertEqual(self.resetPassword(self.adminUser).status_code, 302)
+        self.adminUser.refresh_from_db()
+        self.assertFalse(self.adminUser.must_change_password)
+        self.assertTrue(self.adminUser.check_password('ResetPass123!'))
+        self.assertEqual(self.client.get('/admin/').status_code, 200)
+
+    def test_invalid_form_does_not_change_password_or_flag(self):
+        for payload in ({'password2': 'Mismatch456!'},
+                        {'password1': '12345678', 'password2': '12345678'}):
+            self.assertEqual(self.resetPassword(**payload).status_code, 200)
+            self.teacher.refresh_from_db()
+            self.assertFalse(self.teacher.must_change_password)
+            self.assertTrue(self.teacher.check_password(PASSWORD))
+
+    def test_conflicting_disable_form_does_not_mark_user(self):
+        response = self.resetPassword(usable_password='false')
+        self.assertEqual(response.status_code, 302)
+        self.teacher.refresh_from_db()
+        self.assertFalse(self.teacher.must_change_password)
+        self.assertTrue(self.teacher.check_password(PASSWORD))
+    def test_disabling_password_does_not_set_forced_change(self):
+        response = self.resetPassword(**{'usable_password': 'false', 'unset-password': '1'})
+        self.assertEqual(response.status_code, 302)
+        self.teacher.refresh_from_db()
+        self.assertFalse(self.teacher.has_usable_password())
+        self.assertFalse(self.teacher.must_change_password)
+
+    def test_unauthorized_staff_cannot_reset_password(self):
+        staff = User.objects.create_user(username='reset-staff', is_staff=True, password=PASSWORD)
+        self.client.force_login(staff)
+        self.assertEqual(self.resetPassword().status_code, 403)
+        self.teacher.refresh_from_db()
+        self.assertFalse(self.teacher.must_change_password)
+        self.assertTrue(self.teacher.check_password(PASSWORD))
