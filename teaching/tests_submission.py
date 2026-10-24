@@ -4,6 +4,7 @@
 投递断言口径：async_task 以 (函数路径, submissionId, cluster='long')
 投递一次；投递失败不影响 200 响应（q2_task_id 留空，补投扫描兜底）。
 """
+import json
 from datetime import timedelta
 from unittest import mock
 
@@ -155,6 +156,7 @@ class SubmissionApiTests(TestCase):
             'tasks.tasks_judge.runJudgeTask', submissionId, cluster='long')
         task = Submission.objects.get(pk=submissionId).judge_task
         self.assertEqual(task.q2_task_id, 'q2-task-1')
+        self.assertIsNotNone(task.last_dispatched_at)
 
     def test_dispatchFailureStillAccepted(self):
         """投递失败不影响受理响应：200 + q2_task_id 留空（补投扫描兜底）"""
@@ -165,6 +167,41 @@ class SubmissionApiTests(TestCase):
         submissionId = resp.json()['submissionId']
         task = Submission.objects.get(pk=submissionId).judge_task
         self.assertEqual(task.q2_task_id, '')
+        self.assertIsNotNone(task.last_dispatched_at)
+
+    def test_invalid_field_types_return_400_without_records(self):
+        invalid = [
+            {'problemId': value} for value in (True, [], {}, 'bad', -1, 2 ** 63)
+        ] + [
+            {'homeworkId': value} for value in (False, [], {}, 'bad', -1, 2 ** 63)
+        ] + [
+            {'language': value} for value in ([], {}, True, None)
+        ] + [
+            {'code': value} for value in (42, True, [], {})
+        ]
+        for payload in invalid:
+            with self.subTest(payload=payload):
+                self.assertEqual(self._submit(**payload).status_code, 400)
+        for body in ([], ['invalid'], 'invalid'):
+            with self.subTest(body=body):
+                self.assertEqual(self.client.post('/api/submissions/', body,
+                                                  format='json').status_code, 400)
+        response = self.client.post('/api/submissions/',
+            json.dumps(self._payload(code='\ud800'), ensure_ascii=True),
+            content_type='application/json')
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Submission.objects.exists())
+        self.assertFalse(JudgeTask.objects.exists())
+        self.mockAsyncTask.assert_not_called()
+
+    def test_invalid_list_filters_return_400(self):
+        for name in ('problem', 'homework'):
+            for value in ('bad', '-1', '1.5', str(2 ** 63), '9' * 100):
+                with self.subTest(name=name, value=value):
+                    self.assertEqual(self.client.get('/api/submissions/',
+                                                     {name: value}).status_code, 400)
+        self.assertEqual(self.client.get('/api/submissions/',
+                                         {'status': 'invalid'}).status_code, 400)
 
     def test_snapshotFrozenOnSubmit(self):
         """受理时冻结资格快照：改题不影响已受理提交（7.3 结果可复现）"""

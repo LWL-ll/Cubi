@@ -7,13 +7,14 @@
 - Q2 管「至少一次投递」，租约状态机管「至多一次生效」——所有写操作
   带 attempt_id 条件，过期 attempt 的执行结果直接丢弃
 - 判题只用受理时冻结的快照（judge_snapshot），零实时查题
-- 测试数据保密链（14.7）：日志/错误详情不含测试输入与预期输出，
-  WA 只给「第 k 点」+ 实际输出截断预览；spj 输出不回显
+- 测试数据保密链（14.7）：隐藏点仅返回固定状态文案，
+  用户 stdout/stderr 与 spj 输出均不回显
 """
 import logging
 import re
 from datetime import timedelta
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import F
 from django.http import Http404
@@ -52,7 +53,7 @@ SPJ_LIMITS = {'cpuLimit': 2_000_000_000, 'clockLimit': 5_000_000_000,
               'memoryLimit': 268_435_456, 'copyOutMax': SPJ_OUTPUT_MAX}
 
 MAX_JUDGE_ATTEMPTS = 2              # 单提交最多执行 2 次（与 long 集群 max_attempts 对齐）
-HEARTBEAT_TIMEOUT_SECONDS = 60      # 租约心跳超时（8.1 租约回收）
+HEARTBEAT_TIMEOUT_SECONDS = 60      # 心跳阈值下限，实际覆盖 HTTP 最坏重试预算
 PENDING_REDISPATCH_SECONDS = 120    # pending 补投扫描阈值（受理投递失败兜底）
 REPEAT_SCAN_COUNT = 20              # 重复检测窗口：同用户同题最近 20 条（8.2）
 MAX_PREVIEW_CHARS = 500             # WA 输出预览截断（14.7）
@@ -97,66 +98,99 @@ def getExecutionCount(attemptId):
     return (attemptId + 1) // 2
 
 
-def callJudge(func, *args):
+def getHeartbeatTimeoutSeconds():
+    """网络重试两次 × 沙箱整体重试两次，另留 30 秒调度余量。"""
+    return max(HEARTBEAT_TIMEOUT_SECONDS, settings.OJ_RUN_TIMEOUT * 4 + 30)
+
+
+def renewLease(judgeTask, attemptId):
+    """沙箱调用前后续租；租约已经转移则停止旧 worker。"""
+    updated = JudgeTask.objects.filter(
+        pk=judgeTask.pk, attempt_id=attemptId,
+        status=JudgeTask.STATUS_LEASED).update(heartbeat_at=timezone.now())
+    if not updated:
+        raise JudgeLeaseLost()
+
+
+def callJudge(func, *args, judgeTask=None, attemptId=None):
     """调用判题客户端：沙箱/网络故障转瞬时异常（q2 重投）；
     认证/请求构造错误为确定性失败（调用方决定终态）"""
+    if judgeTask is not None:
+        renewLease(judgeTask, attemptId)
     try:
-        return func(*args)
+        result = func(*args)
     except (judge.SandboxError, judge.NetworkError) as e:
         raise JudgeTransientError(str(e)) from e
+    if judgeTask is not None:
+        renewLease(judgeTask, attemptId)
+    return result
 
 
 def claimLease(judgeTask):
     """原子领取租约（8.1）：pending/retryable → leased + attempt_id+1
     影响行数=1 才算领到（并发 worker 只有一个成功）；返回新 attempt_id"""
-    updated = JudgeTask.objects.filter(
-        pk=judgeTask.pk, status__in=(
-            JudgeTask.STATUS_PENDING, JudgeTask.STATUS_RETRYABLE)).update(
-        status=JudgeTask.STATUS_LEASED,
-        attempt_id=F('attempt_id') + 1,
-        claimed_at=timezone.now(), heartbeat_at=timezone.now())
-    if not updated:
+    # 旧产物删除失败时保留记录，不能让下一次编译覆盖 file_id。
+    current = JudgeTask.objects.get(pk=judgeTask.pk)
+    if current.status not in (JudgeTask.STATUS_PENDING, JudgeTask.STATUS_RETRYABLE):
         return None
-    judgeTask.refresh_from_db()
-    JudgeTask.objects.filter(pk=judgeTask.pk, started_at__isnull=True) \
-        .update(started_at=timezone.now())
-    Submission.objects.filter(pk=judgeTask.submission_id).update(
-        status=Submission.STATUS_RUNNING)
-    return judgeTask.attempt_id
+    if current.file_id:
+        cleanupFile(current, current.attempt_id)
+    with transaction.atomic():
+        updated = JudgeTask.objects.filter(
+            pk=judgeTask.pk, file_id='', status__in=(
+                JudgeTask.STATUS_PENDING, JudgeTask.STATUS_RETRYABLE),
+            submission__status__in=(
+                Submission.STATUS_QUEUED, Submission.STATUS_RUNNING)).update(
+            status=JudgeTask.STATUS_LEASED,
+            attempt_id=F('attempt_id') + 1,
+            claimed_at=timezone.now(), heartbeat_at=timezone.now())
+        if not updated:
+            return None
+        # 条件 UPDATE 的写锁覆盖读取令牌及 Submission 状态迁移。
+        judgeTask.refresh_from_db()
+        JudgeTask.objects.filter(
+            pk=judgeTask.pk, attempt_id=judgeTask.attempt_id,
+            status=JudgeTask.STATUS_LEASED, started_at__isnull=True) \
+            .update(started_at=timezone.now())
+        Submission.objects.filter(pk=judgeTask.submission_id).update(
+            status=Submission.STATUS_RUNNING)
+        return judgeTask.attempt_id
 
 
 def recycleStaleLeases():
     """租约回收 + 补投扫描（8.1，qcluster long 集群 schedule 每分钟执行）：
-    - leased 心跳超 60s → retryable + attempt_id+1（作废旧令牌）
-      + 清 file_id + 清理残留产物 + 重新投递
+    - leased 心跳超 HTTP 重试预算 → retryable + attempt_id+1（作废旧令牌）
+      + 清理残留产物 + 重新投递
     - pending 超 120s 未投递 → 补投（受理 on_commit 投递失败兜底）
     - retryable 孤儿兜底：瞬错回退后依赖 q2 retry 重投，但重投链
       可能断（broker 消息丢失/重试用尽/进程被杀），无在途任务的
       retryable 会永久悬挂。余量内 → 置回 pending 重新投递；余量
       已尽 → failed 终态（不再悬挂）"""
     now = timezone.now()
+    staleBefore = now - timedelta(seconds=getHeartbeatTimeoutSeconds())
     recycledIds = set()  # 本轮第一扫已回收并重新投递的任务（第三扫须排除）
     stale = list(JudgeTask.objects.select_related('submission').filter(
         status=JudgeTask.STATUS_LEASED,
-        heartbeat_at__lt=now - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)))
+        heartbeat_at__lt=staleBefore))
     for task in stale:
-        fileId = task.file_id
         updated = JudgeTask.objects.filter(
             pk=task.pk, attempt_id=task.attempt_id,
-            status=JudgeTask.STATUS_LEASED).update(
+            status=JudgeTask.STATUS_LEASED,
+            heartbeat_at__lt=staleBefore).update(
             status=JudgeTask.STATUS_RETRYABLE,
-            attempt_id=task.attempt_id + 1, file_id='',
+            attempt_id=task.attempt_id + 1, q2_task_id='',
+            last_dispatched_at=None,
             claimed_at=None, heartbeat_at=None)
         if not updated:
             continue  # 心跳过期与正常完成竞争：已完成则不动
         recycledIds.add(task.pk)
-        if fileId:
-            try:
-                judge.deleteFile(fileId)
-            except judge.JudgeClientError as e:
-                logger.warning('回收清理编译产物 %s 失败：%s', fileId, e)
-        redispatch(task)
-    # 补投扫描：受理时投递失败的任务（q2_task_id 留空、长时间停在 pending）
+        cleanupFile(task, task.attempt_id + 1)
+        redispatch(task, force=True)
+    # 非活动租约的残留产物可重试清理，删除成功才抹掉审计记录。
+    for task in JudgeTask.objects.exclude(
+            status=JudgeTask.STATUS_LEASED).exclude(file_id=''):
+        cleanupFile(task, task.attempt_id)
+    # 补投扫描：失败待投按 120s，已成功排队按 long retry 窗口。
     pending = list(JudgeTask.objects.select_related('submission').filter(
         status=JudgeTask.STATUS_PENDING,
         submission__created_at__lt=now - timedelta(seconds=PENDING_REDISPATCH_SECONDS)))
@@ -177,18 +211,42 @@ def recycleStaleLeases():
         # 置回 pending 再投递：状态迁移天然防重（下一轮扫描不再命中
         # retryable）；claimLease 幂等兜住与 q2 重投的并发多投
         updated = JudgeTask.objects.filter(
-            pk=task.pk, status=JudgeTask.STATUS_RETRYABLE,
+            pk=task.pk, attempt_id=task.attempt_id,
+            status=JudgeTask.STATUS_RETRYABLE,
             claimed_at__isnull=True).update(status=JudgeTask.STATUS_PENDING)
         if updated:
-            redispatch(task)
+            redispatch(task, force=True)
 
 
-def redispatch(judgeTask):
-    """重新投递到 long 集群：投递失败记日志（下轮扫描继续兜底）"""
+def redispatch(judgeTask, force=False):
+    """按最近尝试时间原子占位，成功排队的消息在 retry 窗口内不补投。"""
+    task = JudgeTask.objects.select_related('submission').get(pk=judgeTask.pk)
+    if task.status not in (JudgeTask.STATUS_PENDING, JudgeTask.STATUS_RETRYABLE):
+        return
+    now = timezone.now()
+    retry = settings.Q_CLUSTER.get('ALT_CLUSTERS', {}).get('long', {}).get(
+        'retry', settings.Q_CLUSTER.get('retry', 1000))
+    wait = retry if task.q2_task_id else PENDING_REDISPATCH_SECONDS
+    lastDispatch = task.last_dispatched_at or task.submission.created_at
+    # force 只允许尚未占位的回收/回退任务立即投递；并发扫描已经
+    # 写入时间后仍须遵守窗口，不能因旧快照的 force 重复入队。
+    if not (force and task.last_dispatched_at is None) \
+            and lastDispatch > now - timedelta(seconds=wait):
+        return
+    updated = JudgeTask.objects.filter(
+        pk=task.pk, attempt_id=task.attempt_id, status=task.status,
+        last_dispatched_at=task.last_dispatched_at,
+        q2_task_id=task.q2_task_id).update(
+        last_dispatched_at=now, q2_task_id='')
+    if not updated:
+        return
     try:
-        async_task(JUDGE_TASK_FUNC, judgeTask.submission_id, cluster='long')
+        taskId = async_task(JUDGE_TASK_FUNC, task.submission_id, cluster='long')
+        JudgeTask.objects.filter(
+            pk=task.pk, last_dispatched_at=now).update(q2_task_id=taskId)
     except Exception:
-        logger.exception('补投提交 %s 失败', judgeTask.submission_id)
+        # 保留本次尝试时间，失败后也等待 120s，不能覆盖 worker 的状态。
+        logger.exception('补投提交 %s 失败', task.submission_id)
 
 
 def checkEligibility(submission):
@@ -214,7 +272,10 @@ def detectRepeat(submission):
         user_id=submission.user_id, problem_id=submission.problem_id,
         homework_id=submission.homework_id, language=submission.language,
         problem_revision=submission.problem_revision, tests_hash=submission.tests_hash,
-        created_at__lt=submission.created_at).exclude(pk=submission.pk) \
+        created_at__lt=submission.created_at,
+        status__in=Submission.TERMINAL_STATUSES - {
+            Submission.STATUS_SYSTEM_ERROR, Submission.STATUS_REPEAT}) \
+        .exclude(pk=submission.pk) \
         .order_by('-created_at')[:REPEAT_SCAN_COUNT]
     for previous in recent:
         if previous.fingerprint == submission.fingerprint:
@@ -288,8 +349,10 @@ def compileSubmission(judgeTask, attemptId, submission, tierLimits):
     """C 编译（8.3）：成功 → fileId 落 JudgeTask（回收审计用）；
     编译失败 → compile_error 终态返回 None；沙箱故障 → 瞬时异常 q2 重投"""
     request = buildCompileRequest(submission.code, tierLimits)
+    renewLease(judgeTask, attemptId)
     result = callJudge(judge.submitRun, request)[0]
     if result['status'] != 'Accepted':
+        renewLease(judgeTask, attemptId)
         if result['status'] in SANDBOX_TRANSIENT_STATUSES:
             raise JudgeTransientError(f'编译沙箱错误：{result["status"]}')
         stderr = result.get('files', {}).get('stderr', '')
@@ -299,8 +362,22 @@ def compileSubmission(judgeTask, attemptId, submission, tierLimits):
     fileId = result.get('fileIds', {}).get('main')
     if not fileId:
         raise JudgeTransientError('编译成功但缺少 fileIds["main"]')
-    JudgeTask.objects.filter(pk=judgeTask.pk, attempt_id=attemptId) \
-        .update(file_id=fileId)
+    updated = JudgeTask.objects.filter(
+        pk=judgeTask.pk, attempt_id=attemptId,
+        status=JudgeTask.STATUS_LEASED).update(
+        file_id=fileId, heartbeat_at=timezone.now())
+    if not updated:
+        # 编译请求返回时租约已被回收；此 fileId 从未登记，必须就地回收。
+        try:
+            judge.deleteFile(fileId)
+        except judge.JudgeClientError:
+            try:
+                async_task('tasks.tasks_judge.cleanupDetachedFile', fileId,
+                           cluster='long')
+            except Exception:
+                logger.exception('遗留编译产物 %s 清理投递失败，需人工清理', fileId)
+        raise JudgeLeaseLost()
+    renewLease(judgeTask, attemptId)
     return fileId
 
 
@@ -346,20 +423,15 @@ def sanitizeOutput(text, maxChars=MAX_PREVIEW_CHARS):
     return cleaned[:maxChars] + '\n…（输出过长已截断）'
 
 
-def buildWaDetail(testIndex, stdout):
-    """WA 详情（14.7）：只给「第 k 点」+ 实际输出截断预览，不给预期输出"""
-    return f'第 {testIndex} 个测试点未通过\n实际输出：\n{sanitizeOutput(stdout)}'
+def buildWaDetail(testIndex):
+    """隐藏点只用固定文案，避免用户程序回显 stdin 泄露测试输入。"""
+    return f'第 {testIndex} 个测试点未通过'
 
 
-def buildStatusDetail(testIndex, status, result):
-    """非 WA 详情（14.7 固定白名单文案）：RE 附截断清洗后的 stderr
-    （学生自己程序的输出，无保密问题）"""
+def buildStatusDetail(testIndex, status):
+    """隐藏测试点的 stdout/stderr 均可能含输入，只给固定状态文案。"""
     label = STATUS_LABELS.get(status, status)
-    detail = f'第 {testIndex} 个测试点：{label}'
-    stderr = result.get('files', {}).get('stderr', '')
-    if status == Submission.STATUS_RUNTIME_ERROR and stderr.strip():
-        detail += '\n' + sanitizeOutput(stderr)
-    return detail
+    return f'第 {testIndex} 个测试点：{label}'
 
 
 # checker 正常执行状态（第十一章部分分协议）：
@@ -390,15 +462,23 @@ def interpretSpjScore(result, points):
     return 0
 
 
-def runSpj(submission, test, userOutput):
+def runSpj(submission, test, userOutput, judgeTask, attemptId):
     """跑 spj（第十一章）：checker 沙箱故障重试 1 次，仍失败 → SpjFailedError
     （checker 失败 ≠ 用户 WA）；正常执行（Accepted/Nonzero Exit Status）
     返回分数协议解释后的得分"""
     spjCode = submission.judge_snapshot.get('spj_code', '')
     points = test.get('points', 0)
     for attempt in range(2):
-        result = callJudge(judge.submitRun,
-                           buildSpjRequest(spjCode, test, userOutput))[0]
+        try:
+            result = callJudge(
+                judge.submitRun, buildSpjRequest(spjCode, test, userOutput),
+                judgeTask=judgeTask, attemptId=attemptId)[0]
+        except JudgeTransientError:
+            if attempt == 0:
+                logger.warning('提交 %s checker 客户端瞬时故障，重试 1 次',
+                               submission.pk)
+                continue
+            raise SpjFailedError('checker 连续故障') from None
         if result['status'] in SPJ_NORMAL_STATUSES:
             return interpretSpjScore(result, points)
         if attempt == 0:
@@ -409,13 +489,15 @@ def runSpj(submission, test, userOutput):
     raise SpjFailedError('checker 执行异常')  # 防御性兜底，正常路径不经过
 
 
-def judgeOneTest(submission, testIndex, test, fileId, tierLimits):
+def judgeOneTest(submission, testIndex, test, fileId, tierLimits,
+                 judgeTask, attemptId):
     """单测试点判题（8.4）：沙箱运行 → Accepted 进比对（或 spj）
     返回 {status, score, detail, time, memory}；沙箱瞬时错误抛异常重投"""
     request = buildRunRequest(submission, test, fileId, tierLimits)
-    result = callJudge(judge.submitRun, request)[0]
+    result = callJudge(judge.submitRun, request,
+                       judgeTask=judgeTask, attemptId=attemptId)[0]
     point = {
-        'time': int(result.get('time', 0) * 1_000_000_000),  # 秒 → 纳秒
+        'time': result.get('time', 0),  # go-judge 原生纳秒
         'memory': result.get('memory', 0) or 0,
     }
     if result['status'] != 'Accepted':
@@ -423,14 +505,14 @@ def judgeOneTest(submission, testIndex, test, fileId, tierLimits):
             raise JudgeTransientError(f'沙箱错误：{result["status"]}')
         mapped = judge.mapStatus(result['status'])
         point.update(status=mapped, score=0,
-                     detail=buildStatusDetail(testIndex, mapped, result))
+                     detail=buildStatusDetail(testIndex, mapped))
         return point
     stdout = result.get('files', {}).get('stdout')
     if stdout is None:
         raise JudgeTransientError('Accepted 结果缺少 stdout')
     points = test.get('points', 0)
     if submission.judge_snapshot.get('spj_code', '').strip():
-        score = runSpj(submission, test, stdout)
+        score = runSpj(submission, test, stdout, judgeTask, attemptId)
         passed = score >= points
         point.update(status=Submission.STATUS_ACCEPTED if passed
                      else Submission.STATUS_WRONG_ANSWER,
@@ -442,7 +524,7 @@ def judgeOneTest(submission, testIndex, test, fileId, tierLimits):
         point.update(status=Submission.STATUS_ACCEPTED, score=points, detail='')
     else:
         point.update(status=Submission.STATUS_WRONG_ANSWER, score=0,
-                     detail=buildWaDetail(testIndex, stdout))
+                     detail=buildWaDetail(testIndex))
     return point
 
 
@@ -453,10 +535,12 @@ def judgeAllTests(submission, judgeTask, attemptId, fileId, tierLimits):
     points = []
     total = len(tests)
     for index, test in enumerate(tests, start=1):
-        points.append(judgeOneTest(submission, index, test, fileId, tierLimits))
+        points.append(judgeOneTest(submission, index, test, fileId, tierLimits,
+                                   judgeTask, attemptId))
         progress = index * 100 // total
         updated = JudgeTask.objects.filter(
-            pk=judgeTask.pk, attempt_id=attemptId).update(
+            pk=judgeTask.pk, attempt_id=attemptId,
+            status=JudgeTask.STATUS_LEASED).update(
             progress=progress, heartbeat_at=timezone.now())
         if not updated:
             raise JudgeLeaseLost()
@@ -493,7 +577,8 @@ def writeTerminal(judgeTask, attemptId, status, score, errorDetail,
     闸通过才写 Submission——过期 attempt 的结果直接丢弃；返回是否写入"""
     with transaction.atomic():
         updated = JudgeTask.objects.filter(
-            pk=judgeTask.pk, attempt_id=attemptId).update(
+            pk=judgeTask.pk, attempt_id=attemptId,
+            status=JudgeTask.STATUS_LEASED).update(
             status=JudgeTask.STATUS_DONE, progress=100,
             finished_at=timezone.now())
         if not updated:
@@ -518,7 +603,8 @@ def markFailed(judgeTask, attemptId, message):
     与 writeTerminal 同款 attempt_id 闸"""
     with transaction.atomic():
         updated = JudgeTask.objects.filter(
-            pk=judgeTask.pk, attempt_id=attemptId).update(
+            pk=judgeTask.pk, attempt_id=attemptId, status__in=(
+                JudgeTask.STATUS_LEASED, JudgeTask.STATUS_RETRYABLE)).update(
             status=JudgeTask.STATUS_FAILED, progress=100,
             finished_at=timezone.now())
         if updated:
@@ -533,20 +619,15 @@ def fallbackForRetry(judgeTask, attemptId):
     if getExecutionCount(attemptId) + 1 > MAX_JUDGE_ATTEMPTS:
         markFailed(judgeTask, attemptId, '判题多次失败，请联系管理员')
         return False
-    current = JudgeTask.objects.filter(
-        pk=judgeTask.pk, attempt_id=attemptId).first()
-    fileId = current.file_id if current else ''
     updated = JudgeTask.objects.filter(
-        pk=judgeTask.pk, attempt_id=attemptId).update(
-        status=JudgeTask.STATUS_RETRYABLE, file_id='',
+        pk=judgeTask.pk, attempt_id=attemptId,
+        status=JudgeTask.STATUS_LEASED).update(
+        status=JudgeTask.STATUS_RETRYABLE, attempt_id=attemptId + 1,
+        q2_task_id='', last_dispatched_at=None,
         claimed_at=None, heartbeat_at=None)
     if not updated:
         return False  # 租约已被回收：交给回收路径处理
-    if fileId:
-        try:
-            judge.deleteFile(fileId)
-        except judge.JudgeClientError as e:
-            logger.warning('回退清理编译产物 %s 失败：%s', fileId, e)
+    cleanupFile(judgeTask, attemptId + 1)
     return True
 
 
@@ -558,12 +639,24 @@ def cleanupFile(judgeTask, attemptId):
     fileId = current.file_id if current else ''
     if not fileId:
         return
-    JudgeTask.objects.filter(pk=judgeTask.pk, attempt_id=attemptId,
-                             file_id=fileId).update(file_id='')
     try:
         judge.deleteFile(fileId)
     except judge.JudgeClientError as e:
         logger.warning('清理编译产物 %s 失败：%s', fileId, e)
+        return
+    JudgeTask.objects.filter(pk=judgeTask.pk, attempt_id=attemptId,
+                             file_id=fileId).update(file_id='')
+
+
+def cleanupDetachedFile(fileId):
+    """清理旧租约晚返回且首次删除失败的产物；有限重试并保留运维线索。"""
+    for attempt in range(2):
+        try:
+            judge.deleteFile(fileId)
+            return
+        except judge.JudgeClientError:
+            if attempt == 1:
+                logger.exception('遗留编译产物 %s 多次清理失败，需人工清理', fileId)
 
 
 def executeJudge(submissionId, judgeTask, attemptId):

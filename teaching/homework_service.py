@@ -15,9 +15,10 @@ M7 决策（2026-10-18，2026-10-20 题库权限调整）：
 「能不能对这个教学班/这份作业用」，否则 404 不暴露存在性。
 """
 import logging
+from collections.abc import Mapping
 
 from django.db import transaction
-from django.db.models import Count, Max, Q
+from django.db.models import Count, F, Max, Q
 from django.http import Http404
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -37,9 +38,12 @@ MAX_HOMEWORK_PROBLEMS = 20  # 单份作业题目数上限（M7 决策 a）
 def parseDatetimeField(payload, key, label):
     """解析 ISO 时间字段：必填、可解析；naive 时间按本机时区补齐"""
     raw = payload.get(key)
-    if not raw:
+    if not isinstance(raw, str) or not raw:
         raise ValidationError(f'{label}不能为空')
-    parsed = parse_datetime(raw)
+    try:
+        parsed = parse_datetime(raw)
+    except ValueError:
+        parsed = None
     if parsed is None:
         raise ValidationError(f'{label}格式错误（需 ISO 时间，如 2026-10-20T23:59）')
     if timezone.is_naive(parsed):
@@ -52,7 +56,12 @@ def validateHomeworkPayload(payload):
 
     返回 (title, startAt, deadline, problemIds)。
     """
-    title = (payload.get('title') or '').strip()
+    if not isinstance(payload, Mapping):
+        raise ValidationError('请求体必须是对象')
+    title = payload.get('title')
+    if not isinstance(title, str):
+        raise ValidationError('作业标题必须是字符串')
+    title = title.strip()
     if not title:
         raise ValidationError('作业标题不能为空')
     if len(title) > 100:
@@ -66,11 +75,11 @@ def validateHomeworkPayload(payload):
         raise ValidationError('problemIds 必须是题目 id 数组且不能为空')
     if len(problemIds) > MAX_HOMEWORK_PROBLEMS:
         raise ValidationError(f'单份作业最多 {MAX_HOMEWORK_PROBLEMS} 道题')
+    for problemId in problemIds:
+        if type(problemId) is not int or not 0 < problemId < 2 ** 63:
+            raise ValidationError('problemIds 必须是有效的正整数数组')
     if len(set(problemIds)) != len(problemIds):
         raise ValidationError('problemIds 不能有重复项')
-    for problemId in problemIds:
-        if not isinstance(problemId, int):
-            raise ValidationError('problemIds 必须是整数数组')
     return title, startAt, deadline, problemIds
 
 
@@ -136,6 +145,13 @@ def getCurrentProblemIds(homework):
             for item in homework.problems.order_by('order')]
 
 
+def lockHomework(homeworkId):
+    """事务内先取得写锁再读取，提交与教师修改共用（SQLite/PG）。"""
+    if not Homework.objects.filter(pk=homeworkId).update(id=F('id')):
+        raise Http404('作业不存在')
+    return Homework.objects.get(pk=homeworkId)
+
+
 def updateHomework(user, homework, payload):
     """编辑作业（PUT 全量语义）：
 
@@ -145,12 +161,13 @@ def updateHomework(user, homework, payload):
     （选题可见性以请求者身份校验，入口已由 getManageableHomework 保证是本班教师）
     """
     title, startAt, deadline, problemIds = validateHomeworkPayload(payload)
-    if deadline < homework.deadline:
-        raise ValidationError('截止时间只允许向后延长')
-    problemIdsChanged = problemIds != getCurrentProblemIds(homework)
-    if problemIdsChanged and Submission.objects.filter(homework=homework).exists():
-        raise ValidationError('已有提交，题目不可变更')
     with transaction.atomic():
+        homework = lockHomework(homework.pk)
+        if deadline < homework.deadline:
+            raise ValidationError('截止时间只允许向后延长')
+        problemIdsChanged = problemIds != getCurrentProblemIds(homework)
+        if problemIdsChanged and Submission.objects.filter(homework=homework).exists():
+            raise ValidationError('已有提交，题目不可变更')
         if problemIdsChanged:
             # 先腾位再写：删旧中间表后按新序重建（避开 (homework, order) 唯一约束）
             homework.problems.all().delete()
@@ -171,9 +188,11 @@ def updateHomework(user, homework, payload):
 
 def deleteHomework(homework):
     """删除作业：有提交 400（历史数据保护），无提交连带中间表删除"""
-    if Submission.objects.filter(homework=homework).exists():
-        raise ValidationError('已有提交的作业不可删除')
-    homework.delete()
+    with transaction.atomic():
+        homework = lockHomework(homework.pk)
+        if Submission.objects.filter(homework=homework).exists():
+            raise ValidationError('已有提交的作业不可删除')
+        homework.delete()
 
 
 # ================= 学生侧（homework:view，M7） =================

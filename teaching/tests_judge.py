@@ -190,6 +190,71 @@ class JudgeClientTests(SimpleTestCase):
         with self.assertRaises(SandboxError):
             judge.submitRun([{'cmd': 'mock'}])
 
+    def test_resultCountMustMatchCommands(self):
+        """空结果和多余结果不能进入逐点判题。"""
+        for results in ([], [SAMPLE_RESULT, SAMPLE_RESULT]):
+            with self.subTest(count=len(results)):
+                self.mockUrlopen.return_value = FakeResponse(
+                    body=json.dumps(results).encode())
+                with self.assertRaises(SandboxError):
+                    judge.submitRun([{'cmd': 'mock'}])
+
+    def test_invalidUtf8RaisesSandboxError(self):
+        self.mockUrlopen.return_value = FakeResponse(body=b'\xff')
+        with self.assertRaises(SandboxError):
+            judge.submitRun([{'cmd': 'mock'}])
+
+    def test_invalidResultFieldsRaiseSandboxError(self):
+        """畸形响应统一分类，不能逃逸为类型异常或污染资源统计。"""
+        invalidFields = {
+            'status': ([], {}, None, True),
+            'files': (None, [], {'stdout': None}, {'stderr': 1}),
+            'fileIds': (None, [], {'main': 1}),
+            'time': (None, True, '1', -1, float('nan'), float('inf'), 2 ** 63),
+            'memory': (None, True, '1', -1, float('nan'), float('inf'), 2 ** 63),
+            'exitStatus': (None, True, '0', 0.5),
+        }
+        for field, values in invalidFields.items():
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    result = {**SAMPLE_RESULT, field: value}
+                    self.mockUrlopen.return_value = FakeResponse(
+                        body=json.dumps([result]).encode())
+                    with self.assertRaises(SandboxError):
+                        judge.submitRun([{'cmd': 'mock'}])
+
+    def test_missingExitStatusRaisesSandboxError(self):
+        result = {key: value for key, value in SAMPLE_RESULT.items()
+                  if key != 'exitStatus'}
+        self.mockUrlopen.return_value = FakeResponse(
+            body=json.dumps([result]).encode())
+        with self.assertRaises(SandboxError):
+            judge.submitRun([{'cmd': 'mock'}])
+
+    def test_optionalMetadataMayBeOmitted(self):
+        result = {'status': 'Accepted', 'exitStatus': 0,
+                  'files': {'stdout': 'hello-oj\n'}}
+        self.mockUrlopen.return_value = FakeResponse(
+            body=json.dumps([result]).encode())
+        self.assertEqual(judge.submitRun([{'cmd': 'mock'}]), [result])
+
+    def test_invalidResponseMessagesDoNotEchoPayload(self):
+        secret = 'hidden-test-input-and-expected-output'
+        for result in (secret, {**SAMPLE_RESULT, 'status': secret}):
+            with self.subTest(resultType=type(result).__name__):
+                self.mockUrlopen.return_value = FakeResponse(
+                    body=json.dumps([result]).encode())
+                with self.assertRaises(SandboxError) as caught:
+                    judge.submitRun([{'cmd': 'mock'}])
+                self.assertNotIn(secret, str(caught.exception))
+
+    def test_runCodeConvertsNanosecondsToMilliseconds(self):
+        self.mockUrlopen.return_value = FakeResponse(
+            body=json.dumps(makeResults()).encode())
+        result = judge.runCode('print("hello-oj")')
+        self.assertEqual(result['timeMs'], 1.83)
+        self.assertEqual(result['memoryKb'], 2344)
+
     # ---------- uploadFile ----------
 
     def test_uploadFileReturnsFileId(self):

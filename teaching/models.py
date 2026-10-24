@@ -304,6 +304,7 @@ class JudgeTask(models.Model):
                               default=STATUS_PENDING)
     attempt_id = models.PositiveIntegerField('尝试号', default=0)
     q2_task_id = models.CharField('q2 投递标识', max_length=64, blank=True)
+    last_dispatched_at = models.DateTimeField('最近投递时间', null=True, blank=True)
     # 编译产物 fileId：判后即删，租约回收时按此字段清理残留（可审计）
     file_id = models.CharField('编译产物 fileId', max_length=32, blank=True)
     progress = models.PositiveSmallIntegerField('进度 0-100', default=0)

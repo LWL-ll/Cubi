@@ -34,7 +34,7 @@ from .serializers import (HomeworkDetailSerializer,
                           SubmissionDetailSerializer,
                           SubmissionListSerializer,
                           TeacherTeachingClassSerializer)
-from .submission_service import submitSolution
+from .submission_service import parseObjectId, submitSolution
 
 
 class SubmissionPagination(PageNumberPagination):
@@ -69,10 +69,12 @@ class SubmissionListCreateView(APIView):
         homeworkId = request.query_params.get('homework')
         status = request.query_params.get('status')
         if problemId:
-            queryset = queryset.filter(problem_id=problemId)
+            queryset = queryset.filter(problem_id=parseObjectId(problemId, 'problem'))
         if homeworkId:
-            queryset = queryset.filter(homework_id=homeworkId)
+            queryset = queryset.filter(homework_id=parseObjectId(homeworkId, 'homework'))
         if status:
+            if status not in dict(Submission.STATUS_CHOICES):
+                raise ValidationError({'status': '提交状态无效'})
             queryset = queryset.filter(status=status)
         paginator = SubmissionPagination()
         page = paginator.paginate_queryset(queryset, request)

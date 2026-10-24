@@ -12,15 +12,19 @@ Throttled→429），视图层无需转换。
 import hashlib
 import json
 import logging
+from collections.abc import Mapping
 from datetime import timedelta
 
+from django.contrib.auth import get_user_model
 from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 from django_q.tasks import async_task
 from rest_framework.exceptions import NotFound, Throttled, ValidationError
 
 from teaching.helpers import getStudentTeachingClass
-from teaching.models import (Homework, HomeworkProblem, JudgeTask, Problem,
+from teaching.homework_service import lockHomework
+from teaching.models import (HomeworkProblem, JudgeTask, Problem,
                              Submission)
 
 logger = logging.getLogger('codemind.submission')
@@ -70,6 +74,15 @@ def buildJudgeSnapshot(problem):
     }
 
 
+def parseObjectId(value, name):
+    """请求体及查询参数的正整数 ID；避免布尔、容器和溢出进入 ORM。"""
+    if isinstance(value, str) and len(value) <= 19 and value.isascii() and value.isdecimal():
+        value = int(value)
+    if type(value) is not int or not 0 < value < 2 ** 63:
+        raise ValidationError({name: '必须是有效的正整数'})
+    return value
+
+
 def submitSolution(requestUser, payload):
     """受理提交主入口：校验 → 快照 → 原子建表 → 投递
 
@@ -77,25 +90,27 @@ def submitSolution(requestUser, payload):
     problemId / submitType / language / code / homeworkId（作业提交必填）
     返回新 Submission 的 id；校验不过抛 DRF 异常。
     """
-    problemId = payload.get('problemId')
+    if not isinstance(payload, Mapping):
+        raise ValidationError('请求体必须是对象')
+    problemId = parseObjectId(payload.get('problemId'), 'problemId')
     submitType = payload.get('submitType', Submission.SUBMIT_HOMEWORK)
     language = payload.get('language')
     code = payload.get('code')
     homeworkId = payload.get('homeworkId')
 
     validateSubmitType(submitType, homeworkId)
-    homework, item = validateHomeworkSubmission(requestUser, homeworkId, problemId)
-    problem = item.problem
-    frozenProblem = item.getFrozenProblem()
-    validateLanguage(frozenProblem, language)
+    homeworkId = parseObjectId(homeworkId, 'homeworkId')
     validateCode(code)
-    # 脏数据防护：题目未配置测试点时不接受提交（否则 0 分判题无意义）
-    if not frozenProblem.tests:
-        raise ValidationError('题目尚未配置测试点，请联系教师')
 
-    # 频率 count 与建表必须同事务：并发提交下 count 与插入串行化
-    # （SQLite 单写者天然串行；切 PG 后需按用户行 select_for_update 锁）
+    # 固定顺序先锁用户、再锁作业：限流、题目归属、快照与建表使用同一事务。
     with transaction.atomic():
+        get_user_model().objects.filter(pk=requestUser.pk).update(id=F('id'))
+        homework, item = validateHomeworkSubmission(requestUser, homeworkId, problemId)
+        problem = item.problem
+        frozenProblem = item.getFrozenProblem()
+        validateLanguage(frozenProblem, language)
+        if not frozenProblem.tests:
+            raise ValidationError('题目尚未配置测试点，请联系教师')
         checkFrequency(requestUser)
         checkQueueLimit(requestUser)
         submission = createSubmissionRecord(
@@ -114,7 +129,7 @@ def validateSubmitType(submitType, homeworkId):
 
 def validateLanguage(problem, language):
     """语言白名单枚举 + 题目允许语言集（7.1 第 4 项）"""
-    if language not in {Problem.LANGUAGE_C, Problem.LANGUAGE_PYTHON}:
+    if not isinstance(language, str) or language not in {Problem.LANGUAGE_C, Problem.LANGUAGE_PYTHON}:
         raise ValidationError('不支持的语言')
     if language not in (problem.languages or []):
         raise ValidationError('该题目不允许此语言')
@@ -122,9 +137,13 @@ def validateLanguage(problem, language):
 
 def validateCode(code):
     """代码非空且 ≤ 64KB（7.1 第 5 项，防大报文进队列）"""
-    if not code or not code.strip():
+    if not isinstance(code, str) or not code.strip():
         raise ValidationError('代码不能为空')
-    if len(code.encode('utf-8')) > CODE_MAX_BYTES:
+    try:
+        size = len(code.encode('utf-8'))
+    except UnicodeEncodeError:
+        raise ValidationError('代码必须是有效的 UTF-8 文本')
+    if size > CODE_MAX_BYTES:
         raise ValidationError(f'代码超过 {CODE_MAX_BYTES // 1024}KB 上限')
 
 
@@ -135,9 +154,7 @@ def validateHomeworkSubmission(requestUser, homeworkId, problemId):
     - 题目不属于作业 → 404（不暴露作业-题组合关系）
     - 作业未开始/已截止 → 400（时间状态学生本身可见）
     """
-    homework = Homework.objects.filter(pk=homeworkId).first()
-    if homework is None:
-        raise NotFound('作业不存在')
+    homework = lockHomework(homeworkId)
     # 对象级校验：学生经「行政班 → 教学班」三跳推导，不在班 404
     getStudentTeachingClass(requestUser, homework.teaching_class_id)
     # 只在有权访问的作业中查题，存在但未布置的题与不存在的题响应一致。
@@ -204,9 +221,17 @@ def dispatchJudgeTask(submissionId):
     """
 
     def doDispatch():
+        dispatchedAt = timezone.now()
+        updated = JudgeTask.objects.filter(submission_id=submissionId,
+                                           status=JudgeTask.STATUS_PENDING,
+                                           last_dispatched_at__isnull=True).update(
+            last_dispatched_at=dispatchedAt)
+        if not updated:
+            return
         try:
             taskId = async_task(JUDGE_TASK_FUNC, submissionId, cluster='long')
-            JudgeTask.objects.filter(submission_id=submissionId).update(
+            JudgeTask.objects.filter(submission_id=submissionId,
+                                     last_dispatched_at=dispatchedAt).update(
                 q2_task_id=taskId)
         except Exception:
             logger.exception('提交 %s 判题任务投递失败，等待补投扫描兜底', submissionId)

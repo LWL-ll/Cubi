@@ -9,15 +9,19 @@
 - 白名单：学生端题目不含 tests/spj_code
 """
 from datetime import timedelta
+from unittest import mock
 
 from django.contrib.auth.models import Group
+from django.db import transaction
 from django.utils import timezone
 from django.test import TestCase
 from rest_framework.test import APIClient
+from rest_framework.exceptions import ValidationError
 
 from academics.models import (AdminClass, ClassMembership, Course,
                               CourseCollege, Department, Major, TeachingClass)
 from teaching.models import Homework, HomeworkProblem, Problem, Submission
+from teaching.homework_service import updateHomework
 from users.models import SchoolIdentity, StudentProfile, User
 
 PASSWORD = 'Test12345'
@@ -206,6 +210,51 @@ class HomeworkApiTests(TestCase):
         for badTitle in ('', '   ', '长' * 101):
             resp = self._createHomework(title=badTitle)
             self.assertEqual(resp.status_code, 400, msg=f'{badTitle!r} 未拒绝')
+
+    def test_invalid_payload_types_return_400(self):
+        self._login(self.teacher)
+        invalid = [
+            {'title': value} for value in (True, [], 42)
+        ] + [
+            {'startAt': value} for value in (42, [], {}, '2026-99-01T00:00:00')
+        ] + [
+            {'problemIds': value} for value in ([[1]], [{}], [True], [-1], [2 ** 63])
+        ]
+        for payload in invalid:
+            with self.subTest(payload=payload):
+                self.assertEqual(self._createHomework(**payload).status_code, 400)
+        url = f'/api/teacher/teaching-classes/{self.teachingClass.pk}/homeworks/'
+        self.assertEqual(self.client.post(url, [], format='json').status_code, 400)
+        self.assertFalse(Homework.objects.exists())
+
+    def test_stale_homework_cannot_shorten_extended_deadline(self):
+        self._login(self.teacher)
+        self._createHomework()
+        stale = Homework.objects.get(title='第一次作业')
+        extended = self.now + timedelta(days=3)
+        Homework.objects.filter(pk=stale.pk).update(deadline=extended)
+        with self.assertRaises(ValidationError):
+            updateHomework(self.teacher, stale, self._createPayload(
+                deadline=(self.now + timedelta(days=2)).isoformat()))
+        stale.refresh_from_db()
+        self.assertEqual(stale.deadline, extended)
+
+    def test_submission_arriving_before_update_lock_prevents_replacement(self):
+        self._login(self.teacher)
+        self._createHomework()
+        homework = Homework.objects.get(title='第一次作业')
+        originalAtomic = transaction.atomic
+
+        def beginTransaction(*args, **kwargs):
+            # 模拟教师已读取旧对象、尚未开始写事务时，学生提交先落库。
+            self._makeSubmission(homework)
+            return originalAtomic(*args, **kwargs)
+
+        with mock.patch('teaching.homework_service.transaction.atomic', side_effect=beginTransaction):
+            with self.assertRaises(ValidationError):
+                updateHomework(self.teacher, homework,
+                               self._createPayload(problemIds=[self.publicProblem.pk]))
+        self.assertEqual(homework.problems.get().problem_id, self.personalProblem.pk)
 
     # ---------- 组卷：列表 / 详情 ----------
 

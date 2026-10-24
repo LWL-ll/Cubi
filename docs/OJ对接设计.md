@@ -1,7 +1,7 @@
 # CodeMind 教辅平台 · OJ 判题对接设计
 
-> 更新时间：2026-10-18（v4：主架构组件映射补充）
-> 状态：判题沙箱连通验证完成 ✅；后端总体设计已定稿并经审查修订（见第二十章修订记录），代码随批次落地
+> 更新时间：2026-10-25（v11：判题一致性、保密与任务可靠性修复）
+> 状态：判题主流程已实现；本轮新增迁移须在部署前应用，并重新执行真实沙箱验收
 > 配套文档：《异步任务设计.md》（django-q2 基础设施）、《API设计文档.md》（接口约定）、《用户权限设计.md》（22 权限码出处）
 
 ---
@@ -177,7 +177,7 @@ go-judge 的 `status` 为**原始带空格字面量**，共 9 种。**客户端�
 
 1. **身份只来自认证上下文**：所有 OJ API 从会话认证取用户，不接收、忽略、拒绝请求体中的 userId 等身份字段——客户端不可指定「替谁提交」
 2. **隐藏测试数据不经过前端与 API 响应**：隐藏测试点（tests）、预期输出、SPJ 源码与输出只存在于服务端判题链路；题目详情、提交详情、任何列表接口一律不含这些字段（statement_md 必须是剔除受保护代码块后重建的正文）
-3. **结果详情脱敏**：学生可见的 error_detail 只允许固定白名单文案 + 截断清洗后的实际输出预览；日志/Sentry/任务参数禁止记录测试输入、预期输出、完整沙箱请求与认证头
+3. **结果详情脱敏**：隐藏测试的 error_detail 只允许点号和固定白名单文案，不回显用户程序 stdout/stderr（程序可原样输出隐藏输入）；编译诊断可截断清洗后返回。日志/Sentry/任务参数禁止记录测试输入、预期输出、完整沙箱请求与认证头
 
 ### 6.3 组件职责边界
 
@@ -213,12 +213,12 @@ go-judge 的 `status` 为**原始带空格字面量**，共 9 种。**客户端�
 | 提交权限码 | `homework:view` | 403 |
 | 语言 ∈ 题目允许语言集 | 白名单枚举（c / python） | 400 |
 | 代码非空且 ≤ 64KB | 防大报文进队列 | 400 |
-| 提交类型 ∈ {practice, homework} | 白名单枚举（exam 留位二期） | 400 |
+| 提交类型 = homework | 学生只能完成教师布置的作业；practice/exam 不开放 | 400 |
 | homework 提交的组合合法性 | homework 非空时：题目必须属于该作业、作业开放中、学生属于该教学班（原子验证） | 400/404 |
 | 提交频率 | 同用户近 10 秒 ≥ 3 次（`(user, created_at)` 索引 count 查询） | 429 |
 | 队列闸 | 同用户未终态 JudgeTask 数 ≤ 3（超限 400，防积压滥用） | 400 |
 
-**并发防绕过**：频率 count 与 Submission 创建必须在**同一事务**内（SQLite 单写者天然串行；切 PG 后加用户行 `select_for_update` 锁——迁移说明写入代码注释）。当前单校规模 + SQLite 下无需 Redis 滑动窗口。
+**并发防绕过**：事务内按固定顺序先锁用户、再锁作业（条件 `UPDATE id=id` 同时适用于 SQLite/PG），然后检查班级、题目归属、时间、限流和队列上限，冻结快照并创建 Submission。教师修改、删除使用同一作业锁，锁后重读当前数据，再检查是否已有提交及截止时间。请求体类型、正整数 ID、语言和代码类型先校验，非法输入返回 400。
 
 ### 7.2 受理流程（投递原子性）
 
@@ -232,7 +232,7 @@ go-judge 的 `status` 为**原始带空格字面量**，共 9 种。**客户端�
   ⑤ 200 {"submissionId": 12}
 ```
 
-**补投扫描**（防「已建表但未入队」孤儿）：定时任务扫 `JudgeTask.status=pending` 且超过 60s 未投递（`q2_task_id` 为空或投递后超 retry 窗口未 leased）→ 重新投递；`q2_task_id` 记录最近一次投递标识，同一 attempt 只补投一次。
+**补投扫描**（防「已建表但未入队」孤儿）：记录 `last_dispatched_at`（最近投递尝试时间）和 `q2_task_id`。投递失败或从未投递的 pending 任务等待 120s；已成功排队则等待 long 集群 retry 窗口（默认 1000s）。补投前以状态、attempt、原投递时间和原 q2 标识原子占位，成功回写新标识，失败保留尝试时间；连续扫描不得在窗口内重复投递。
 
 ### 7.3 资格语义（受理时间定资格）
 
@@ -254,8 +254,9 @@ terminal = accepted | wrong_answer | compile_error | time_limit_exceeded
 **租约规则**：
 
 - **原子领取**：worker 从 `pending/retryable` 领任务必须原子（SQLite：事务内条件 UPDATE「状态改 leased + attempt_id+1 + claimed_at/heartbeat_at=now」并检查影响行数=1；切 PG 后改 `select_for_update`）——**只有持当前 attempt 的 worker 能写终态、更新进度、清理 fileId**（写操作一律带 attempt_id 条件）
-- **心跳**：每跑完一个测试点更新 `heartbeat_at`（与 progress 同一次写库）
-- **租约回收**：定时任务扫 `leased` 且心跳超 60s → 置 `retryable` + attempt_id+1 + 清 file_id（回收清理残留产物）→ 重新投递
+- **心跳**：每次编译、用户运行和 checker 调用前后续租，每个测试点结束时与 progress 同次写库。所有续租和终态写入都要求当前 attempt 且状态仍为 leased。
+- **租约回收**：心跳阈值为 `max(60, OJ_RUN_TIMEOUT × 4 + 30)` 秒（默认 150s，覆盖网络与沙箱整体重试预算）。扫描后的条件 UPDATE 必须再次确认心跳仍过期，才置 retryable 并将 attempt_id+1 作废旧令牌；删除产物成功后才清 file_id，失败记录留待再次清理。回收排程与判题共用 long 队列，阈值不代表固定时间内完成回收的承诺。
+- **执行次数**：领取租约与读取本次令牌、更新 Submission.running 在同一事务内完成；回收或瞬时错误回退均先增加令牌，下次领取再增加令牌。最多实际执行两次，终态不可重新领取或覆盖。
 - **retryable 孤儿兜底**：瞬时错误回退后依赖 q2 retry 重投，但重投链可能断（broker 消息丢失/重试用尽/进程被杀）→ 回收扫描同时兜 `retryable` 且 claimed_at 为空的任务：执行次数有余量 → 置回 `pending` 重新投递（状态迁移防重、claimLease 幂等防并发多投）；余量已尽 → `failed` + system_error 终态（不再悬挂，M8 验收 5.2 实测）
 - **Q2 重试防并发重判**：long 集群 `retry > 最长任务执行时间`（见 8.5 预算），且任务入口的幂等闸按 attempt 判定——过期 attempt 的执行结果直接丢弃
 
@@ -273,7 +274,8 @@ def runJudgeTask(submissionId):
     # 阶段 1：资格检查——仅查「题目已删除/用户封禁/移除教学班」→ system_error
     #         （用 Submission 上的快照判题，不重查实时题目）
     # 阶段 2：重复检测——fingerprint 比对最近 20 条，命中 → repeat
-    #         （error_detail 记录「重复于提交 #xx」）
+    #         （同作业、语言、修订号和测试哈希，仅有效判题终态；
+    #          排除 queued/running/system_error/repeat，避免故障后无法重交）
     # 阶段 3：编译（仅编译型语言，copyOutCached 产物）——失败 → compile_error
     # 阶段 4：全测试点循环——每个点独立判定与计分，跑完所有点聚合 score；
     #         心跳 + progress 每点更新；沙箱级错误（File Error 瞬时/Internal Error）
@@ -409,6 +411,7 @@ class JudgeTask(models.Model):
     status = models.CharField('状态', choices=五种)
     attempt_id = models.PositiveIntegerField('尝试号', default=0)
     q2_task_id = models.CharField('q2 投递标识', max_length=64, blank=True)
+    last_dispatched_at = models.DateTimeField('最近投递时间', null=True, blank=True)
     file_id = models.CharField('编译产物 fileId', max_length=32, blank=True)  # 回收清理用
     progress = models.PositiveSmallIntegerField('进度 0-100', default=0)
     error = models.TextField('执行错误（脱敏）', blank=True)
@@ -592,10 +595,10 @@ POST /run 跑 spj：
 1. **凭证不入仓库**：token 只从环境变量 `OJ_AUTH_TOKEN` 读取（settings.py 已配置），开发/生产各自注入；泄露后立即轮换
 2. **沙箱侧**（go-judge 已提供）：cgroup 资源隔离、seccomp 拦截危险系统调用、网络默认隔离
 3. **注入方式**：`copyIn` 只用 `content`（代码文本内联）或 `fileId`（`copyOutCached` 产物），**禁用 `LocalFile`（src 绝对路径）**——避免意外暴露宿主机文件
-4. **输出防护**：`copyOutMax` + stdout/stderr `max` 双重限流；结果入库前校验结构（status 必须属于 9 种原始字面量枚举、stdout 必须存在）；学生可见的 stdout/stderr 做**截断 + 控制字符清洗**
-5. **文件清理**：编译产物 fileId 判后即 `DELETE`；租约回收时按 `file_id` 字段清理残留（可审计）
+4. **输出防护**：`copyOutMax` + stdout/stderr `max` 双重限流；响应条数与命令数一致，校验状态、退出码、输出映射及非负有限资源数值，异常统一按沙箱错误处理。隐藏测试 stdout/stderr 不下发；编译诊断截断并清洗控制字符。go-judge `time` 为纳秒，直接入库，Agent 接口展示毫秒时除以 1,000,000。
+5. **文件清理**：编译产物 fileId 判后即 `DELETE`；清理失败保留 `file_id`，回收扫描重试，防新编译覆盖记录。旧租约晚返回的产物立即删除，失败则投递独立清理任务；沙箱与队列同时故障时日志保留 fileId 供运维处理。
 6. **重试上限**：单提交最多 2 次（max_attempts=2 + attempt 幂等闸），防恶意提交放大判题负载
-7. **测试数据保密链**：测试点存 DB 永不下发；`statement_md` 为剔除受保护块后重建；WA 详情只给「第 k 点」+ 实际输出截断预览（不给预期输出）；spj 输出不回显
+7. **测试数据保密链**：测试点存 DB 永不下发；`statement_md` 为剔除受保护块后重建；隐藏点 WA/RE 只给点号和固定说明，用户输出与 spj 输出均不回显
 8. **日志红线**：日志禁止记录测试输入、预期输出、完整沙箱请求与认证头；Sentry/异常采集同样脱敏
 9. **代码访问分级**：学生仅本人代码、教师仅本教学班学生代码（对象级 404，与全项目语义一致）
 10. **提交限流双层闸**：频率闸（10s·3次·429）+ 队列闸（未终态 JudgeTask ≤ 3），准入与建表同事务防并发绕过
@@ -741,3 +744,15 @@ v1 经外部设计审查（P0×5 / P1×14 / P2×8），本版修订：
 - **导入去重与覆盖**：`Problem.source_code`（唯一）+ `source_hash`；内容未变跳过，内容变化且勾选覆盖时更新并 `revision+1`，否则逐条报错
 - **教师端规模化适配**：题库列表与作业选题面板支持 `q` 标题搜索、`tier` 筛选、`scope` 范围与分页加载；公共题在教师端只读
 - **测试**：新增 `teaching/tests_problem_import.py`（导入/权限/1000 题），更新题库与权限矩阵；全量 260 用例通过
+
+### v11（2026-10-25，判题一致性、保密与任务可靠性）
+
+- 隐藏测试取消实际输出与运行 stderr 回显；编译诊断保留脱敏展示。
+- 统一纳秒协议，补响应条数、类型、退出码、非法编码及资源数值校验。
+- 提交与组卷共用事务锁，锁后重读数据，补请求体及筛选参数校验。
+- 重复检测只使用同上下文的有效判题终态，系统故障后允许重新提交。
+- 租约原子领取、心跳复核、两次执行预算和终态保护；默认回收阈值改为 150s，每次沙箱调用前后续租。
+- checker 瞬时故障在局部重试后归为 checker 异常，不额外消耗整个任务的重试预算。
+- 新增 `teaching.0005_judgetask_last_dispatched_at`，记录最近投递尝试；补投使用时间窗口和原子占位，保留失败清理记录。
+- 本轮只生成迁移，不应用业务数据库；部署时先迁移并重启应用及 worker，再按验收清单复测。历史 v2～v10 的输出预览与 60s 回收描述由本版替代；900s 集群 timeout 是执行上限，包含重试的总耗时仍需实际压测。
+- 验证：新增30项回归，全量353项测试通过；系统检查、迁移一致性检查和差异检查通过。本轮未连接真实沙箱，也未应用业务数据库迁移。

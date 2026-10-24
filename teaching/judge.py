@@ -160,10 +160,12 @@ def submitRun(runRequest):
             'POST', '/run', body, 'application/json')
         try:
             results = json.loads(rawBody)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             raise SandboxError('判题响应不是合法 JSON')
         if not isinstance(results, list):
             raise SandboxError('判题响应不是数组（应为与 cmd 一一对应的 Result 列表）')
+        if len(results) != len(runRequest):
+            raise SandboxError('判题响应条数与命令数不一致')
         for result in results:
             _validateResult(result)
         # 沙箱内部错误整体重试：错误随机出现，重跑一次大概率恢复
@@ -180,18 +182,26 @@ def submitRun(runRequest):
 def _validateResult(result):
     """校验单条 Result 结构：防沙箱异常响应污染业务数据
 
-    status 必须是 9 种原始字面量之一；files/fileIds/fileError 若存在
-    必须是 dict。stdout 的存在性由任务层校验（它知道自己声明了什么）。
+    status 必须是 9 种原始字面量之一；exitStatus 必须是整数。
+    files/fileIds 若存在必须是字符串映射，资源统计须在非负整数存储范围内；
+    stdout 的存在性由任务层校验（它知道自己声明了什么）。
     """
     if not isinstance(result, dict):
-        raise SandboxError(f'判题响应条目不是对象：{result!r}')
+        raise SandboxError('判题响应条目不是对象')
     status = result.get('status')
-    if status not in GO_JUDGE_STATUSES:
-        raise SandboxError(f'沙箱返回未知状态字面量：{status!r}')
+    if not isinstance(status, str) or status not in GO_JUDGE_STATUSES:
+        raise SandboxError('沙箱返回无效状态字面量')
+    if type(result.get('exitStatus')) is not int:
+        raise SandboxError('判题响应字段 exitStatus 不是整数')
     for field in ('files', 'fileIds'):
-        value = result.get(field)
-        if value is not None and not isinstance(value, dict):
+        value = result.get(field, {})
+        if not isinstance(value, dict) or any(
+                not isinstance(item, str) for item in value.values()):
             raise SandboxError(f'判题响应字段 {field} 结构非法')
+    for field in ('time', 'memory'):
+        value = result.get(field, 0)
+        if type(value) not in (int, float) or not 0 <= value <= 2 ** 63 - 1:
+            raise SandboxError(f'判题响应字段 {field} 数值非法')
     # fileError 是细分错误清单（实测为空数组，见 OJ对接设计.md 4.2 响应示例）
     fileError = result.get('fileError')
     if fileError is not None and not isinstance(fileError, list):
@@ -385,8 +395,7 @@ def _buildCompiledRunRequest(code, language, stdin,
 def _cleanRunResult(result, status=None):
     """把 go-judge 原生 Result 清洗成 Agent 易用的扁平结构
 
-    注意：实测 v1.13.3 的 time 字段单位是秒（tasks_judge.py 已按秒处理），
-    memory 单位是 byte；此处统一换算成毫秒 / KB。
+    time 字段单位是纳秒，memory 单位是 byte；此处统一换算成毫秒 / KB。
     """
     files = result.get('files') or {}
     return {
@@ -394,6 +403,6 @@ def _cleanRunResult(result, status=None):
         'stdout': files.get('stdout', ''),
         'stderr': files.get('stderr', '') or result.get('error', ''),
         'exitStatus': result.get('exitStatus', -1),
-        'timeMs': round(result.get('time', 0) * 1000, 2),
+        'timeMs': round(result.get('time', 0) / 1_000_000, 2),
         'memoryKb': round(result.get('memory', 0) / 1024, 2),
     }
