@@ -14,7 +14,7 @@
 | 数据格式 | 请求/响应均为 JSON（文件上传用 multipart/form-data） |
 | 全局默认 | 所有接口默认要求登录（`IsAuthenticated`），未登录返回 **403**（页面跳转登录页） |
 | 权限校验 | 功能级：视图声明 `permCode` 由 `PermRequired` 校验；动作级：写操作按动作细分权限码（见各接口） |
-| 权限码体系 | 见《用户权限设计.md》，共 23 个权限码 |
+| 权限码体系 | 见《用户权限设计.md》，共 22 个权限码 |
 
 ### 1.2 错误码语义（重要）
 
@@ -26,12 +26,22 @@
 
 错误响应统一格式：`{"error": "具体原因"}`。
 
-### 1.3 导入文件约定（xlsx）
+### 1.3 导入文件约定
 
-- 所有批量导入接口用 multipart 上传 `file` 字段，xlsx 格式
+**教务批量导入（学生/教师/课程）— xlsx**
+
+- 所有教务批量导入接口用 multipart 上传 `file` 字段，xlsx 格式
 - **第一行为表头（解析时跳过）**；列约定：**A 列编号**（学号/工号/课程编号）、**B 列姓名/课程名称**、**C 列初始密码**
 - 学号按 8 位规则解析：前 4 位年级、中 2 位专业码、后 2 位班序（规则见 `academics/student_no.py`，正式格式定稿后只改此文件）；学院/专业/班级不存在时自动创建
 - 响应：`{"successCount": n, "errors": [{"line": 行号, "reason": "原因"}]}`（行号为 xlsx 物理行号）
+
+**题库批量导入（公共题库）— ZIP**
+
+- 仅系统管理员可调用：`POST /api/admin/problems/import/`，或后台页面 `/admin/teaching/problem/import/`
+- multipart 上传 `file`（ZIP）字段；ZIP 内为 `manifest.xlsx`/`manifest.csv` 清单 + 每题一个 `.md`
+- 清单列：`file`（必填）、`code`、`tier`、`languages`、`compareStrategy`
+- 响应：`{"batchId", "total", "createdCount", "updatedCount", "skippedCount", "errorCount", "errors": [{"file", "reason"}]}`
+- 完整包格式、去重/覆盖语义与限制见 `docs/题库批量导入.md`
 
 ---
 
@@ -313,11 +323,12 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 
 ---
 
-## 四、教师工作台接口（前缀 `/api/teacher/`）
+## 四、教学业务接口（题库 / 作业 / 提交）
 
-> ⚠️ 入口校验 `IsTeacherGroup`：仅「教师」分组（或超级用户）可访问，其他角色一律 403。
-> 对象级校验 `getTeacherTeachingClass`：非当前教师执教的教学班一律 404（不暴露教学班存在性）。
-> 学生端接口的对称校验 `getStudentTeachingClass`：学生 → 学校身份 → 学生资料 → 当前成员关系 → 行政班 → 教学班（3 跳推导），离班成员（left_at 非空）404。
+> 4.1~4.4 使用 `/api/teacher/` 前缀；4.5 学生作业与提交使用 `/api/`；
+> 管理员题库导入见第五章。
+> 教师接口：入口 `IsTeacherGroup`/权限码 → 对象级 `getTeacherTeachingClass`/`getManageableHomework`，越界 404；
+> 学生接口：`getStudentTeachingClass` 经「身份 → 资料 → 成员关系 → 行政班 → 教学班」三跳推导，离班 404。
 
 ### 4.1 `GET /api/teacher/teaching-classes/` — 我的教学班列表
 
@@ -337,11 +348,58 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 **响应 200**：完整教学班详情（course、department、组成行政班、学生名单、同班教师、studentCount，同 3.5 字段结构，复用 `TeachingClassSerializer`）。
 **404**：教学班不存在，或**不是当前教师的执教教学班**（超级用户放行）。
 
+### 4.3 题库接口（教师 + 超级用户）
+
+| 端点 | 方法 | 权限 | 说明 |
+|---|---|---|---|
+| `/api/teacher/problems/` | GET | homework:bank | 公共题库 + 本人个人题；分页 20；支持 `q`（标题关键词）、`tier`、`scope=all/public/mine` |
+| `/api/teacher/problems/` | POST | homework:bank | 新建个人题；`is_public` 由端点决定，请求体无效 |
+| `/api/teacher/problems/<id>/` | GET | homework:bank | 题目详情；教师可读公共题与本人个人题，他人个人题 404 |
+| `/api/teacher/problems/<id>/` | PUT/DELETE | homework:bank + 对象级 | 编辑/删除本人个人题；公共题仅超级用户可写，越权 404 |
+| `/api/teacher/public-problems/` | POST | IsSuperUser | 新建公共题（仅系统管理员） |
+
+**筛选示例**：`GET /api/teacher/problems/?scope=public&tier=basic&q=两数`
+**保密链**：题库接口一律不返回 `tests`/`spj_code`；学生题面接口同样走白名单。
+
+### 4.4 作业组卷接口（教师）
+
+| 端点 | 方法 | 权限 | 说明 |
+|---|---|---|---|
+| `/api/teacher/teaching-classes/<id>/homeworks/` | GET/POST | homework:publish + `getTeacherTeachingClass` | 教学班作业列表 / 创建作业 |
+| `/api/teacher/homeworks/<id>/` | GET/PUT/DELETE | homework:publish + `getManageableHomework` | 作业详情 / 编辑 / 删除 |
+
+创建校验：标题非空 ≤100、开始时间 < 截止时间、`problemIds` 非空去重且 ≤20；
+题目必须对教师可见（公共题 + 本人个人题）；`problem_revision` 冻结选题时修订号。
+编辑：已有提交后题目列表锁定，截止时间只允许向后延长。删除：有提交 400。
+
+### 4.5 学生作业与提交接口（前缀 `/api/`）
+
+| 端点 | 方法 | 权限 | 说明 |
+|---|---|---|---|
+| `/api/homeworks/` | GET | homework:view | 我的作业列表（三态 + 我的提交概况） |
+| `/api/homeworks/<id>/` | GET | homework:view + 对象级 | 作业详情；开始前 404 防提前看题 |
+| `/api/problems/<id>/` | GET | homework:view | 学生题面（title/statementMd/samples/languages，无 tests/spj） |
+| `/api/submissions/` | POST/GET | homework:view | 受理提交 / 我的提交列表（分页 20，可按题/作业/状态过滤） |
+| `/api/submissions/<id>/` | GET | homework:view | 提交详情 + 判题进度（仅本人或超管，否则 404） |
+
 ---
 
-## 五、附录
+## 五、管理员题库导入接口（前缀 `/api/admin/`）
 
-### 5.1 权限码总表（22 个）
+### 5.1 `POST /api/admin/problems/import/` — ZIP 批量导入公共题库
+
+- **权限**：`IsSuperUser`（仅 `is_superuser`；教师/课程组/教务/学生一律 403）
+- **请求**：multipart `file`（ZIP），可选 `overwrite`（`1`/`true`/`on`）
+- **响应 200**：`{"batchId", "total", "createdCount", "updatedCount", "skippedCount", "errorCount", "errors": [{"file", "reason"}]}`
+- **响应 400**：ZIP/清单结构错误（缺 manifest、路径穿越、超过大小/数量限制等）
+- **导入语义**：题目进入公共题库；按 `source_code` 去重，内容未变跳过，内容变化且勾选覆盖时更新并 `revision+1`
+- 完整包格式、限制与操作步骤见 `docs/题库批量导入.md`
+
+---
+
+## 六、附录
+
+### 6.1 权限码总表（22 个）
 
 | 角色 | 权限码 | 中文名 |
 |---|---|---|
@@ -351,29 +409,32 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 | 学生 | homework:view / notice:view / material:view / analysis:view_self | 作业查看与提交 / 查看班级通知 / 查看班级资料 / 查看自己的学生画像 |
 | 通用 | profile:edit | 修改个人资料 |
 
-### 5.2 两级权限模型
+### 6.2 两级权限模型
 
 - **功能级**：分组权限码（Group → Permission → permCode），回答"能不能用这个功能" → 无权限 **403**
 - **对象级**：业务接口内校验，回答"能不能对这个对象用" → 无权访问 **404**（防探测）
   - 教师：`teachingClass.teachers` 含当前用户（1 跳）
   - 学生：身份 → 资料 → 当前成员关系 → 行政班 → 教学班（3 跳推导）
 
-### 5.3 后续规划（随功能轮次补充）
+### 6.3 后续规划（随功能轮次补充）
 
-- 教师教学班内业务 API：通知 CRUD（notice:manage）、学情图表（analysis:view）、班级资料 CRUD（material:class_manage）、作业发布/提醒（homework:publish/remind）、批改（homework:comment/answer/ai）
-- 教师个人题库 API（homework:bank）
-- 课程组业务 API（knowledge:manage 等 4 项）
-- 学生作业 API（homework:view）
+- 教师教学班内业务 API：通知 CRUD（notice:manage）、学情图表（analysis:view）、班级资料 CRUD（material:class_manage）、作业提醒（homework:remind）、批改（homework:comment/answer/ai）
+- 课程组业务 API（knowledge:manage / material:class_visible / chapter:manage）
+- 学生画像 API（analysis:view_self）、个人资料 API（profile:edit）
 - 所有教师业务 API 必须套 `getTeacherTeachingClass`、学生业务 API 套 `getStudentTeachingClass` 对象级校验
 
-### 5.4 测试与质量保障
+> 已落地（2026-10-20）：题库 API（公共题库 + 个人题库、筛选/分页）、作业组卷/学生作业/提交 API、管理员 ZIP 批量导入 API。
 
-- 权限测试矩阵：`manage.py test users`（11 用例，四角色 × 端点边界）
-- 对象级测试矩阵：`manage.py test teaching`（23 用例：教师/学生对象级 + 三个 API 分组权限类 + 教师 API 视图）
+### 6.4 测试与质量保障
+
+- 权限测试矩阵：`manage.py test users`（17 用例，四角色 × 端点边界）
+- 教学业务测试矩阵：`manage.py test teaching`（168 用例：对象级校验、题库/作业/提交/判题/导入）
 - 教务 API 权限矩阵：`manage.py test academics`（48 用例：8 个视图 × 入口权限码/动作级权限码/参数兜底）
+- 异步任务与判题运维：`manage.py test tasks`（27 用例）
+- 全量回归：260 用例通过（2026-10-20）
 - 权限一致性检查：`manage.py check`（定义四处与数据库自动比对）
 
-### 5.5 相关审查技能
+### 6.5 相关审查技能
 
 项目在 Claude Code 中配置了以下审查技能（`.claude/skills/`），接口设计、评审与联调时可直接调用：
 

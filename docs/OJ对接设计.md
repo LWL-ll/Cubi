@@ -2,7 +2,7 @@
 
 > 更新时间：2026-10-18（v4：主架构组件映射补充）
 > 状态：判题沙箱连通验证完成 ✅；后端总体设计已定稿并经审查修订（见第二十章修订记录），代码随批次落地
-> 配套文档：《异步任务设计.md》（django-q2 基础设施）、《API设计文档.md》（接口约定）、《用户权限设计.md》（23 权限码出处）
+> 配套文档：《异步任务设计.md》（django-q2 基础设施）、《API设计文档.md》（接口约定）、《用户权限设计.md》（22 权限码出处）
 
 ---
 
@@ -159,7 +159,7 @@ go-judge 的 `status` 为**原始带空格字面量**，共 9 种。**客户端�
 | 4 | 数据模型 | Problem / Homework / Submission / JudgeTask 四张表 + Homework–Problem 中间表；题目快照（revision）随提交冻结；测试用例 DB JSON 永不下发 |
 | 5 | 一期范围 | practice + homework（exam 留枚举位）；**SPJ 一期做**（Python + 部分分协议）；交互题/跨用户查重/考试模式二期 |
 | 6 | 录题方式 | 系统管理员 ZIP 批量导入公共题库（题面+样例+测试点+分值+spj）；教师个人题库仍可单题 markdown 录入 |
-| 7 | 权限码 | **全部复用现有 23 码**（users/models.py Meta.permissions，零新增） |
+| 7 | 权限码 | **全部复用现有 22 码**（users/models.py Meta.permissions，零新增；2026-10-20 删除 question_bank:manage） |
 | 8 | 查询 API | 学生提交历史；教师教学班聚合 + 成绩导出 xlsx |
 | 9 | 安全红线 | 测试点/预期输出/他人代码/SPJ 输出永不下发；`statement_md` 为剔除受保护代码块后重建的正文；日志禁记测试数据 |
 | 10 | 资格语义 | **受理时间定资格**（提交时保存题目快照与授权快照）；仅删除/封禁等明确规则在判题时取消 |
@@ -328,7 +328,7 @@ HTTP 超时：OJ_RUN_TIMEOUT(30s)，必须 > clockLimit 上限 10s
 
 ```python
 class Problem(models.Model):
-    """题目：题面 markdown + 测试用例 JSON + 可选 spj（题库两级归属见第十二章）"""
+    """题目：题面 markdown + 测试用例 JSON + 可选 spj（题库归属见第十二章）"""
     title = models.CharField('标题', max_length=100)
     statement_md = models.TextField('题面 markdown（已剔除受保护代码块后重建）')
     samples = models.JSONField('公开样例', default=list)      # [{input, output}]，可下发
@@ -339,8 +339,10 @@ class Problem(models.Model):
     has_spj = models.BooleanField('特殊判定', default=False)
     spj_code = models.TextField('spj 源码（Python）', blank=True)
     revision = models.PositiveIntegerField('修订号', default=1)  # 每次修改题目 +1
-    owner = models.ForeignKey(User, SET_NULL, null=True)       # 归属：教师个人 / 课程组公共；删号题目保留
+    owner = models.ForeignKey(User, SET_NULL, null=True)       # 归属：教师个人 / 系统管理员导入的公共题；删号题目保留
     is_public = models.BooleanField('公共题库', default=False)
+    source_code = models.CharField('导入编号', max_length=128, unique=True, null=True)
+    source_hash = models.CharField('源文件哈希', max_length=64)  # 重复导入去重
     created_at / updated_at
 
 
@@ -500,7 +502,7 @@ POST /run 跑 spj：
 
 ## 十二、题库权限分级与查询 API
 
-### 12.1 权限分级（全部复用现有 23 码，出处 users/models.py Meta.permissions）
+### 12.1 权限分级（全部复用现有 22 码，出处 users/models.py Meta.permissions）
 
 | 角色 | 权限码 | 能力 |
 |---|---|---|
@@ -683,7 +685,7 @@ v1 经外部设计审查（P0×5 / P1×14 / P2×8），本版修订：
 - **P0 全部修正**：编译产物改 `copyOutCached`（废弃 files 兜底路径）；状态字面量改原始带空格值 + 未知兜底；幂等闸升级为 attempt 租约状态机（防并发重复执行）；`statement_md` 改为剔除受保护块后重建 + SPJ 输出不回显；新增 go-judge 部署契约（限源/关 /config/cgroup 验收）
 - **P1 修正**：删除「空闲并发查询」承诺；API 忽略请求体 userId；受理时间定资格 + 题目快照（revision + tests_hash）冻结；指纹改统一换行后原文哈希（防误伤缩进语义）；**部分分一期支持**（全点执行 + score/total_score + SPJ 分数协议，主状态取最差单点）；投递 `transaction.on_commit` + 补投扫描；限流准入与建表同事务；判题独立 JudgeTask 表 + Q2 long 集群预算（retry > 最长任务）；租约回收替代固定 10 分钟扫描；SPJ 独立资源档 + checker 失败 ≠ 用户 WA；Homework–Problem 中间表 + DB 约束；WA 可见输出截断清洗 + 日志红线
 - **P2 修正**：比较器三策略精确定义；FileError 按细分类型决定重试；资源总量压测项；API 契约补全（学生可见字段白名单/终态不可变/无幂等键说明）；编译环境部署契约（judge-env.md）
-- **未采纳**：「权限码证据不足」——23 权限码已核验于 users/models.py Meta.permissions 与《用户权限设计.md》（审查时未读取该文档）
+- **未采纳**：「权限码证据不足」——23 权限码已核验于 users/models.py Meta.permissions 与《用户权限设计.md》（审查时未读取该文档；2026-10-20 公共题库权限调整后为 22）
 
 ### v3（2026-10-18，第二轮意见）
 
@@ -731,3 +733,11 @@ v1 经外部设计审查（P0×5 / P1×14 / P2×8），本版修订：
 - **部署红线重申**：cgroup 验收失败即拒绝启动判题（不降级运行）；nginx 限源验收后 /config 关闭；凭证只走 OJ_AUTH_TOKEN 环境变量
 - **验收修复（围栏末尾换行）**：端到端验收实测发现 `extractBlocks` 用 `'\n'.join` 丢失数据围栏内容末尾换行，导致 expected 存成 `"30"` 而程序输出 `"30\n"`，exact 逐字节比对误判 WA。修复口径：4 个数据围栏（input-sample/output-sample/input/output）按**文件语义**保留内容末尾换行（与程序 stdout 行尾一致）；spj-python 是代码块不在此列。此后录题数据一律按文件内容存储，比对层（第五章三策略）无需任何规范化补偿
 - **验收修复（checker 状态门槛）**：实测发现 runSpj 仅认 Accepted，而部分分协议要求 checker exit≠0（go-judge 必然报 `Nonzero Exit Status`）→ 部分分被误判为 checker 故障置 system_error。**v6 的「checker 非 Accepted 一律按故障处理」作废**，修正口径：checker 正常执行 = Accepted（exit 0 满分）+ Nonzero Exit Status（exit≠0 部分分协议信号），二者进分数协议；其余状态（TLE/MLE/OLE/Signalled/Dangerous Syscall/File Error/Internal Error）仍按故障重试 1 次。单元测试 mock 教训：`Accepted + exitStatus≠0` 是现实不存在的组合，mock 必须用真实状态字面量
+
+### v10（2026-10-20，题库批量导入与权限收敛）
+
+- **公共题库权限收敛**：删除课程组 `question_bank:manage`（迁移 0017/0018）；公共题仅系统管理员可增删改，教师只读、可选题；教师个人题库保留
+- **ZIP 批量导入**：新增 `teaching/problem_import.py`、后台页 `/admin/teaching/problem/import/` 与 `POST /api/admin/problems/import/`；ZIP 内 `manifest.xlsx`/`manifest.csv` + 每题一个 md，支持约 1000 题规模
+- **导入去重与覆盖**：`Problem.source_code`（唯一）+ `source_hash`；内容未变跳过，内容变化且勾选覆盖时更新并 `revision+1`，否则逐条报错
+- **教师端规模化适配**：题库列表与作业选题面板支持 `q` 标题搜索、`tier` 筛选、`scope` 范围与分页加载；公共题在教师端只读
+- **测试**：新增 `teaching/tests_problem_import.py`（导入/权限/1000 题），更新题库与权限矩阵；全量 260 用例通过

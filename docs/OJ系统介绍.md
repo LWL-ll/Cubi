@@ -112,7 +112,7 @@ go-judge 云沙箱（https，独立部署，nginx 限源）
 
 ## 三、核心数据模型
 
-三张表都在 `teaching/models.py`。
+核心表均位于 `teaching/models.py`；本章聚焦 Problem / Submission / JudgeTask 三张核心表。
 
 ### 3.1 Problem（题目）
 
@@ -127,6 +127,7 @@ go-judge 云沙箱（https，独立部署，nginx 限源）
 | has_spj / spj_code | 特殊判定开关 + checker 源码（Python） |
 | revision | 修订号，每次改题 +1 |
 | owner / is_public | 题库归属：公共题库（is_public=True，系统管理员导入/维护，教师只读选题）/ 教师个人题库 |
+| source_code / source_hash | 批量导入溯源：稳定编号（唯一，个人题为空）/ markdown 原文 SHA256；重复导入据此去重与判断变化 |
 
 ### 3.2 Submission（提交）
 
@@ -565,11 +566,19 @@ model.Request）——必须包 `{"cmd": [...]}`。
 
 | 端点 | 方法 | 权限 | 说明 |
 |---|---|---|---|
-| /api/submissions/ | POST | homework:view | 受理提交（九项校验），返回 {submissionId} |
-| /api/submissions/ | GET | homework:view | 我的提交列表（分页 20，可过滤 problem/homework/status；超管看全部） |
-| /api/submissions/\<id\>/ | GET | homework:view | 提交详情（仅本人或超管，否则 404；含 code 与 progress，不含测试点/预期/spj 输出） |
-| /api/teacher/problems/ | POST | homework:bank | 教师录题（个人题库；学生 403） |
+| /api/teacher/teaching-classes/ | GET | IsTeacherGroup | 我的教学班列表 |
+| /api/teacher/teaching-classes/\<id\>/ | GET | IsTeacherGroup + 对象级 | 教学班详情 |
+| /api/teacher/problems/ | GET/POST | homework:bank | 题库列表（支持 q/tier/scope 筛选）/ 新建个人题 |
+| /api/teacher/problems/\<id\>/ | GET/PUT/DELETE | homework:bank + 对象级 | 题目详情（教师可读公共题）/ 编辑删除（公共题仅超管） |
+| /api/teacher/public-problems/ | POST | IsSuperUser | 新建公共题（仅系统管理员） |
+| /api/teacher/teaching-classes/\<id\>/homeworks/ | GET/POST | homework:publish + 对象级 | 教学班作业列表 / 创建作业 |
+| /api/teacher/homeworks/\<id\>/ | GET/PUT/DELETE | homework:publish + 对象级 | 作业详情 / 编辑 / 删除 |
 | /api/homeworks/ | GET | homework:view | 学生作业列表 |
+| /api/homeworks/\<id\>/ | GET | homework:view + 对象级 | 学生作业详情（开始前 404） |
+| /api/problems/\<id\>/ | GET | homework:view | 学生题面（无 tests/spj_code） |
+| /api/submissions/ | POST/GET | homework:view | 受理提交 / 我的提交列表 |
+| /api/submissions/\<id\>/ | GET | homework:view | 提交详情与判题进度 |
+| /api/admin/problems/import/ | POST | IsSuperUser | ZIP 批量导入公共题库 |
 
 ---
 
@@ -580,6 +589,9 @@ SPJ 与作业锁定、租约与运维）已全部实测通过（2026-10-19，提
 94259b9）。遗留项：沙箱 nginx 限源部署与 judge-env.md 回填
 （等新沙箱上线）；spj 输出红线实测（需 spj 题）；验收签字；
 全量测试回归。
+
+2026-10-20 补充：题库 ZIP 批量导入、公共题库权限收敛到系统管理员、
+教师题库搜索/筛选与作业选题分页已完成；全量测试 260 用例通过。
 
 ---
 
