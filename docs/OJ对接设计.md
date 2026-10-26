@@ -550,6 +550,7 @@ POST /run 跑 spj：
 - 已有提交 → 题目列表锁定（改题 400「已有提交，题目不可变更」），只允许改标题/时间（M7 决策 c）
 - 无提交 → 题目列表整体替换，revision 重新快照（先腾位再写，避开 (homework, order) 唯一约束）
 - 截止时间只允许向后延长（缩短 400，防误伤已规划学生，M7 决策 f）
+- 2026-10-26 补充：参考答案一旦公开，永久禁止延长截止时间或更换题目；删除全部答案不清空首次公开标志。其余快照和已有提交限制不变。
 
 **删除语义**：无提交可删（连带中间表）；有提交 400（DB 层 Submission.homework PROTECT 兜底，M7 决策 d）。
 
@@ -576,6 +577,16 @@ POST /run 跑 spj：
 
 **规模化适配**：教师题库列表与作业选题面板支持 `q`（标题关键词）、`tier` 筛选和
 分页加载；1000 题规模下不再一次性拉全量。
+
+### 12.6 教师参考答案与作业提醒（2026-10-26）
+
+- `HomeworkAnswer` 一对一挂在 HomeworkProblem，保存教师手写正文，独立于 Problem、HomeworkProblem.problem_snapshot、Submission.judge_snapshot 和 AgentTutorReport.corrected_code。接口不从隐藏测试点、SPJ 或 Agent 代码生成答案，不改变自动判题标准或历史成绩。
+- 教师以 `homework:answer` 维护、删除本作业逐题答案；`POST /api/teacher/homeworks/<id>/answers/publish/` 仅在 `now > deadline` 且至少有一条答案时首次公开，允许部分题目先公开。公开后新增、修正或删除答案即时生效，首次公开时间 Homework.answers_released_at 永久保留。
+- 学生以 `homework:view` 调用 `GET /api/homeworks/<id>/answers/`，须当前在班、已经公开且已经截止；否则统一 404。原学生作业响应只增加 answersAvailable，不嵌入答案正文，提交、判题及测试点保密口径保持不变。
+- 公开答案后永久禁止延期和换题，避免学生看到答案后继续提交。首次公开、作业编辑及提交共用作业写锁，并在锁后重读状态；截止时刻本身仍可提交，答案须严格过了截止时刻才可公开。
+- `homework:remind` 的提醒范围是当前在班且未交齐各题的学生，不按得分、AC 或判题故障筛选；只允许作业进行中发送。同作业、同学生滚动一小时去重，与作业写锁配合保证教师并发发送不重复。
+- 提醒仅创建 HomeworkReminder 站内记录，学生以 `notice:view` 查看和标记本人已读；不调用沙箱、不创建 Q2 邮件或短信任务，不改变 JudgeTask 租约和投递流程。班级通知与阅读统计的完整接口见《API设计文档》5.7～5.9。
+- `teaching.0006_teacher_backend` 已于 2026-10-26 在本地业务库备份后应用；本轮新增 `teaching.0007_teacher_communication`，业务库应用须另行确认，生产环境迁移状态独立核验。前端本轮未改，AI 答案生成或审批等扩展未实现。
 
 ## 十三、资源限制策略（分档）
 

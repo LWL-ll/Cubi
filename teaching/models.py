@@ -122,6 +122,7 @@ class Homework(models.Model):
     title = models.CharField('作业标题', max_length=100)
     start_at = models.DateTimeField('开始时间')
     deadline = models.DateTimeField('截止时间')
+    answers_released_at = models.DateTimeField('答案首次公开时间', null=True, blank=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, models.SET_NULL,
                                    null=True, verbose_name='发布教师',
                                    related_name='published_homeworks')
@@ -416,3 +417,70 @@ class TeachingMaterial(models.Model):
         verbose_name = '班级资料'
         verbose_name_plural = '班级资料'
         ordering = ['-created_at', '-id']
+
+
+class ClassNotice(models.Model):
+    """通知归属教学班，同班教师共同维护。"""
+    teaching_class = models.ForeignKey(
+        TeachingClass, models.PROTECT, related_name='notices')
+    title = models.CharField('标题', max_length=100)
+    content = models.TextField('正文', max_length=10000)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, models.SET_NULL, null=True,
+        related_name='created_class_notices')
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, models.SET_NULL, null=True,
+        related_name='updated_class_notices')
+    created_at = models.DateTimeField('发布时间', auto_now_add=True)
+    updated_at = models.DateTimeField('修改时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '班级通知'
+        verbose_name_plural = '班级通知'
+        ordering = ['-created_at', '-id']
+
+
+class NoticeRead(models.Model):
+    notice = models.ForeignKey(ClassNotice, models.CASCADE, related_name='reads')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, models.CASCADE,
+                             related_name='notice_reads')
+    read_at = models.DateTimeField('首次阅读时间', auto_now_add=True)
+
+    class Meta:
+        verbose_name = '通知阅读记录'
+        verbose_name_plural = '通知阅读记录'
+        constraints = [models.UniqueConstraint(
+            fields=['notice', 'user'], name='uniq_notice_reader')]
+
+
+class HomeworkReminder(models.Model):
+    """站内作业提醒；同作业同学生的冷却由作业写锁串行保护。"""
+    homework = models.ForeignKey(Homework, models.CASCADE, related_name='reminders')
+    recipient = models.ForeignKey(settings.AUTH_USER_MODEL, models.CASCADE,
+                                  related_name='homework_reminders')
+    sent_by = models.ForeignKey(settings.AUTH_USER_MODEL, models.SET_NULL,
+                                null=True, related_name='sent_homework_reminders')
+    created_at = models.DateTimeField('提醒时间', auto_now_add=True)
+    read_at = models.DateTimeField('阅读时间', null=True, blank=True)
+
+    class Meta:
+        verbose_name = '作业站内提醒'
+        verbose_name_plural = '作业站内提醒'
+        ordering = ['-created_at', '-id']
+        indexes = [models.Index(fields=['homework', 'recipient', 'created_at'],
+                                name='reminder_cooldown_idx')]
+
+
+class HomeworkAnswer(models.Model):
+    """教师手工参考答案独立于题目与判题快照，不读取隐藏测试数据。"""
+    homework_problem = models.OneToOneField(
+        HomeworkProblem, models.CASCADE, related_name='reference_answer')
+    content = models.TextField('参考答案', max_length=50000)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, models.SET_NULL,
+                                   null=True, related_name='homework_answers')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('修改时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '作业参考答案'
+        verbose_name_plural = '作业参考答案'

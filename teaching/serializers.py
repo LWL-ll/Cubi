@@ -155,6 +155,8 @@ class HomeworkListSerializer(serializers.Serializer):
                                                read_only=True)
     startAt = serializers.DateTimeField(source='start_at', read_only=True)
     deadline = serializers.DateTimeField(read_only=True)
+    answersReleasedAt = serializers.DateTimeField(source='answers_released_at',
+                                                   read_only=True, allow_null=True)
     problemCount = serializers.IntegerField(read_only=True)
     submissionCount = serializers.IntegerField(read_only=True)
     createdAt = serializers.DateTimeField(source='created_at', read_only=True)
@@ -208,6 +210,10 @@ class HomeworkStudentListSerializer(serializers.Serializer):
     myBestScore = serializers.IntegerField(read_only=True)
     status = serializers.SerializerMethodField()
     teacherName = serializers.SerializerMethodField()
+    answersAvailable = serializers.SerializerMethodField()
+
+    def get_answersAvailable(self, obj):
+        return obj.answers_released_at is not None and timezone.now() > obj.deadline
 
     def get_status(self, obj):
         """三态派生：未开始 / 进行中 / 已截止"""
@@ -240,6 +246,10 @@ class HomeworkStudentDetailSerializer(serializers.Serializer):
     problems = serializers.SerializerMethodField()
     mySubmissions = SubmissionBriefSerializer(source='my_submissions_cache',
                                               many=True, read_only=True)
+    answersAvailable = serializers.SerializerMethodField()
+
+    def get_answersAvailable(self, obj):
+        return obj.answers_released_at is not None and timezone.now() > obj.deadline
 
     def get_status(self, obj):
         now = timezone.now()
@@ -297,3 +307,32 @@ class TeachingMaterialSerializer(serializers.Serializer):
                                             allow_null=True)
     createdAt = serializers.DateTimeField(source='created_at', read_only=True)
     updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
+
+
+class ClassNoticeSerializer(serializers.Serializer):
+    id = serializers.IntegerField(read_only=True)
+    teachingClassId = serializers.IntegerField(source='teaching_class_id', read_only=True)
+    title = serializers.CharField(read_only=True)
+    content = serializers.CharField(read_only=True)
+    createdById = serializers.IntegerField(source='created_by_id', read_only=True,
+                                           allow_null=True)
+    updatedById = serializers.IntegerField(source='updated_by_id', read_only=True,
+                                           allow_null=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
+
+
+class StudentNoticeSerializer(ClassNoticeSerializer):
+    myReadAt = serializers.DateTimeField(read_only=True, allow_null=True)
+
+
+class HomeworkReminderSerializer(serializers.Serializer):
+    id = serializers.IntegerField(read_only=True)
+    homeworkId = serializers.IntegerField(source='homework_id', read_only=True)
+    homeworkTitle = serializers.CharField(source='homework.title', read_only=True)
+    teachingClassId = serializers.IntegerField(source='homework.teaching_class_id',
+                                               read_only=True)
+    deadline = serializers.DateTimeField(source='homework.deadline', read_only=True)
+    sentById = serializers.IntegerField(source='sent_by_id', read_only=True, allow_null=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    readAt = serializers.DateTimeField(source='read_at', read_only=True, allow_null=True)

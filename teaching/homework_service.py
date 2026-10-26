@@ -9,6 +9,7 @@ M7 决策（2026-10-18，2026-10-20 题库权限调整）：
   无提交 → 题目列表可整体替换（revision 重新快照）
 - 无提交可删；有提交 400（DB 层 Submission.homework PROTECT 兜底）
 - 截止时间只允许向后延长（缩短 400，防误伤已规划学生）
+- 参考答案首次公开后永久禁止延期和更换题目（含题序）
 
 权限链：视图层 PermRequired(homework:publish) 管「能不能用功能」，
 服务层 getManageableHomework/getTeacherTeachingClass 管
@@ -158,6 +159,7 @@ def updateHomework(user, homework, payload):
     - 标题/开始时间可改；截止时间只允许向后延长（M7 决策 f）
     - 已有提交 → 题目列表锁定，改题 400（M7 决策 c）
     - 无提交 → 题目列表整体替换，revision 重新快照
+    - 参考答案已公开 → 截止时间与题目列表锁定，标题仍可修改
     （选题可见性以请求者身份校验，入口已由 getManageableHomework 保证是本班教师）
     """
     title, startAt, deadline, problemIds = validateHomeworkPayload(payload)
@@ -166,6 +168,11 @@ def updateHomework(user, homework, payload):
         if deadline < homework.deadline:
             raise ValidationError('截止时间只允许向后延长')
         problemIdsChanged = problemIds != getCurrentProblemIds(homework)
+        if homework.answers_released_at is not None:
+            if deadline > homework.deadline:
+                raise ValidationError('参考答案已公开，不能延长截止时间')
+            if problemIdsChanged:
+                raise ValidationError('参考答案已公开，题目不可变更')
         if problemIdsChanged and Submission.objects.filter(homework=homework).exists():
             raise ValidationError('已有提交，题目不可变更')
         if problemIdsChanged:

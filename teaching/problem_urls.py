@@ -8,12 +8,19 @@
   开始前 404 防提前看题）
 """
 from django.urls import path
+from . import communication_api as communication
 
 from .api import (StudentHomeworkDetailView, StudentHomeworkListView,
                   StudentProblemDetailView, StudentMaterialListView,
                   StudentMaterialDownloadView)
 
 urlpatterns = [
+    path('teaching-classes/<int:teachingClassId>/notices/', communication.StudentNoticeListView.as_view()),
+    path('notices/<int:noticeId>/', communication.StudentNoticeDetailView.as_view()),
+    path('notices/<int:noticeId>/read/', communication.StudentNoticeReadView.as_view()),
+    path('reminders/', communication.StudentReminderListView.as_view()),
+    path('reminders/<int:reminderId>/read/', communication.StudentReminderReadView.as_view()),
+    path('homeworks/<int:homeworkId>/answers/', communication.StudentHomeworkAnswersView.as_view()),
     path('teaching-classes/<int:teachingClassId>/materials/', StudentMaterialListView.as_view()),
     path('materials/<int:materialId>/download/', StudentMaterialDownloadView.as_view()),
     path('problems/<int:problemId>/', StudentProblemDetailView.as_view()),

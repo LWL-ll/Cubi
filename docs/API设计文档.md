@@ -468,12 +468,62 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 - PATCH 仅接受 name（非空、≤50 字）、email（合法邮箱或空字符串）、title（≤50 字，须已有教师档案），部分更新。
 - 工号/学号、账号、角色、权限、密码、所属学院及任教关系不可通过本接口修改。未知字段或非法数据整次拒绝，不产生部分更新；教师档案不会由该接口自行创建。
 
-### 5.7 本轮迁移与验证
+### 5.7 班级通知与阅读情况
 
-- 新增 teaching.0006_teacher_backend：SubmissionReview、TeachingMaterial，以及题目编号作用域唯一约束。本轮仅在测试库迁移；部署启用新接口前须备份并应用该迁移。
+| 方法与路径 | 权限 | 内容 |
+|---|---|---|
+| `GET/POST /api/teacher/teaching-classes/<id>/notices/` | notice:manage | 任教班级通知列表（分页 20）/发布（201） |
+| `GET/PATCH/DELETE /api/teacher/notices/<id>/` | notice:manage | 任教班级通知详情、部分修改、删除（204） |
+| `GET /api/teacher/notices/<id>/readers/` | notice:manage | 当前学生阅读情况，分页 20 |
+| `GET /api/teaching-classes/<id>/notices/` | notice:view | 当前班级学生通知列表，分页 20 |
+| `GET /api/notices/<id>/` | notice:view | 当前班级学生通知详情 |
+| `POST /api/notices/<id>/read/` | notice:view | 标记本人首次阅读，返回 `{"readAt": ...}` |
+
+- POST 创建只接受 `title`（必填，1～100 字）、`content`（必填，1～10000 字）；PATCH 仅接受这两个字段的非空子集，正文按普通文本保存。不接受班级、作者或接收人覆盖字段。
+- 通知返回 `id/teachingClassId/title/content/createdById/updatedById/createdAt/updatedAt`，学生响应另含 `myReadAt`（未读为 null）。GET 不自动标记已读，标记接口请求体为空对象 `{}`，重复请求保留首次时间。
+- readers 返回分页 `count/next/previous/results`，另含 `noticeId/summary`；summary 为 `studentCount/readCount/unreadCount`，始终按当前全班计算。results 含当前学生简要身份及 `readAt`，离班历史阅读记录保留但不计入统计。
+- 同班教师可共同维护；通知编辑不清空阅读记录，因此已读仅表示曾读过通知，不保证读过最新版本。删除通知同时删除其阅读记录。
+- 教师须任教、学生须当前在班；跨班和不存在的通知返回相同 404。所有作者、修改人和阅读人取当前会话。
+
+### 5.8 作业站内提醒
+
+| 方法与路径 | 权限 | 内容 |
+|---|---|---|
+| `GET /api/teacher/homeworks/<id>/reminders/` | homework:remind | 本班作业待提醒人数预览 |
+| `POST /api/teacher/homeworks/<id>/reminders/` | homework:remind | 为满足条件的学生生成站内提醒 |
+| `GET /api/reminders/` | notice:view | 本人、当前班级的提醒列表，分页 20 |
+| `POST /api/reminders/<id>/read/` | notice:view | 标记本人提醒已读，返回提醒对象 |
+
+- 仅 `startAt <= now <= deadline` 可预览或发送；接收人由服务端当前班级名单计算，为尚未交齐每道题目的学生。提交后判错、系统错误也算该题已交，不以 AC 或成绩判断。
+- 同作业、同学生滚动一小时内不重复生成，冷却由同班所有教师共享；满一小时可再次提醒。发送在作业事务锁内重读题目、提交及提醒窗口，避免并发重复生成。
+- 预览返回 `homeworkId/eligibleCount/readyCount/skippedCount`；发送返回 `homeworkId/eligibleCount/sentCount/skippedCount`。eligibleCount 为未交齐人数，skippedCount 为仍在冷却的人数。
+- 发送与标记已读请求体均为 `{}`；不接受客户端指定发送人、接收人或修改已读时间。重复标记保留首次时间。
+- 提醒对象返回 `id/homeworkId/homeworkTitle/teachingClassId/deadline/sentById/createdAt/readAt`。离班后原提醒不可见，他人的提醒与不存在的提醒均为相同 404。
+- 本轮仅创建站内数据库记录，不投递邮件、短信或其他外部消息，也不创建异步发送任务；前端尚未接入。
+
+### 5.9 作业参考答案
+
+| 方法与路径 | 权限 | 内容 |
+|---|---|---|
+| `GET /api/teacher/homeworks/<id>/answers/` | homework:answer | 任教班级作业答案列表，包含草稿 |
+| `PUT/DELETE /api/teacher/homeworks/<id>/answers/<problemId>/` | homework:answer | 保存或删除本作业一道题的答案 |
+| `POST /api/teacher/homeworks/<id>/answers/publish/` | homework:answer | 作业截止后手动公开，重复请求幂等 |
+| `GET /api/homeworks/<id>/answers/` | homework:view | 当前班级学生查看已经公开且已经截止的答案 |
+
+- PUT 只接受 `{"content":"参考答案"}`，正文非空、≤50000 字，允许提前维护。problemId 为本作业题目主键；他班作业或未选入本作业的题目不可写入。同班任教教师共同维护，修改人取会话。
+- 列表和发布返回 `{"homeworkId": ..., "releasedAt": ..., "answers": [...]}`；每条为 `problemId/content/updatedById/createdAt/updatedAt`，按作业题序排列。PUT 返回对应答案对象，DELETE 成功 204。
+- 发布请求体为 `{}`，首次发布要求 `now > deadline` 且至少有一条答案，允许部分题目先公开。首次公开时记录 releasedAt；以后新增、纠错或删除答案直接反映在已公开列表，删除全部答案也不清空首次公开标志。
+- 一旦公开，永久禁止延长该作业截止时间或更换题目。公开、作业编辑和提交共用作业事务锁并重读状态，防止发布与延期并发绕过约束。
+- 教师作业列表和详情新增只读 `answersReleasedAt`；学生作业列表和详情新增 `answersAvailable`，仅在已公开且 `now > deadline` 时为 true。这些接口不嵌入答案正文；答案正文只通过独立 answers 接口读取。
+- 学生提前、未公开、跨班或离班访问均返回相同“参考答案不存在”404；答案只来自教师手写内容，不读取隐藏测试点、预期输出、SPJ、判题快照或 Agent 自测代码，不改变题面和判题数据。
+
+### 5.10 迁移与验证
+
+- teaching.0006_teacher_backend 包含 SubmissionReview、TeachingMaterial 及题目编号作用域唯一约束；已于 2026-10-26 在本地业务库备份后应用，原有 35 张非元数据表逐行校验未变。生产环境仍须独立确认迁移状态。
+- 新增 teaching.0007_teacher_communication：ClassNotice、NoticeRead、HomeworkReminder、HomeworkAnswer 及 Homework.answers_released_at；本轮不应用业务库，部署启用新接口前须备份并应用迁移。
 - 若已产生跨教师同编号题目，恢复旧版全局唯一约束前须先处理重复编号；不自动删除或合并题目。
-- 验证命令：`python manage.py test`、`python manage.py check`、`python manage.py makemigrations --check --dry-run`。本轮不修改前端或连接真实判题沙箱。
-- 2026-10-26 验证结果：新增 42 项教师后端/资料/个人资料回归，全量 **406 项测试通过**；系统检查、迁移一致性和差异检查通过。
+- 验证命令：`python manage.py test teaching.tests_notices teaching.tests_reminders teaching.tests_answers`、`python manage.py test`、`python manage.py check`、`python manage.py makemigrations --check --dry-run`。本轮不修改前端或连接真实判题沙箱。
+- 本轮验证（2026-10-26）：新增 **49 项**回归（通知 10、提醒 16、答案 23），全量 **455 项测试通过**；`manage.py check` 与 `makemigrations --check --dry-run` 通过。迁移快照测试使用迁移前后历史模型验证旧表结构，避免以当前模型查询旧版字段。
 
 ## 六、附录
 
@@ -496,7 +546,7 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 
 ### 6.3 后续规划（随功能轮次补充）
 
-- 教师通知 CRUD（notice:manage）、作业提醒（homework:remind）、答案管理与 AI 扩展仍待后续；班级成绩看板、私有资料和提交批语已于 2026-10-26 实现后端。
+- 教师通知 CRUD、阅读统计、站内作业提醒、参考答案、班级成绩看板、私有资料和提交批语已实现后端，前端待接入；AI 扩展（homework:ai）仍待后续。
 - 课程组业务 API（knowledge:manage / material:class_visible / chapter:manage）
 - 学生画像 API（analysis:view_self）待开发；个人资料 API（profile:edit）已实现。
 - 所有教师业务 API 必须套 `getTeacherTeachingClass`、学生业务 API 套 `getStudentTeachingClass` 对象级校验
@@ -509,7 +559,8 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 - 教学业务测试矩阵：`manage.py test teaching`（168 用例：对象级校验、题库/作业/提交/判题/导入）
 - 教务 API 权限矩阵：`manage.py test academics`（48 用例：8 个视图 × 入口权限码/动作级权限码/参数兜底）
 - 异步任务与判题运维：`manage.py test tasks`（27 用例）
-- 全量回归：260 用例通过（2026-10-20）
+- 上述分模块数量为 2026-10-20 历史基线，当时全量 260 项通过；不代表当前测试规模。
+- 当前全量回归：**455 项通过**（2026-10-26，通知/提醒/参考答案本轮），详见 5.10。
 - 权限一致性检查：`manage.py check`（定义四处与数据库自动比对）
 
 ### 6.5 相关审查技能

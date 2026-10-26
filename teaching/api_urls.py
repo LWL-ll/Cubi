@@ -1,6 +1,7 @@
 """教师工作台 API 路由（挂在 /api/teacher/ 前缀下）"""
 from django.urls import path
 from . import api
+from . import communication_api as communication
 
 from .api import (PublicProblemCreateView, TeacherHomeworkDetailView,
                   TeacherHomeworkListCreateView, TeacherProblemDetailView,
@@ -8,6 +9,13 @@ from .api import (PublicProblemCreateView, TeacherHomeworkDetailView,
                   TeacherTeachingClassListView)
 
 urlpatterns = [
+    path('teaching-classes/<int:teachingClassId>/notices/', communication.TeacherNoticeListCreateView.as_view()),
+    path('notices/<int:noticeId>/', communication.TeacherNoticeDetailView.as_view()),
+    path('notices/<int:noticeId>/readers/', communication.TeacherNoticeReadersView.as_view()),
+    path('homeworks/<int:homeworkId>/reminders/', communication.TeacherHomeworkRemindersView.as_view()),
+    path('homeworks/<int:homeworkId>/answers/', communication.TeacherHomeworkAnswersView.as_view()),
+    path('homeworks/<int:homeworkId>/answers/publish/', communication.TeacherHomeworkAnswerPublishView.as_view()),
+    path('homeworks/<int:homeworkId>/answers/<int:problemId>/', communication.TeacherHomeworkAnswerDetailView.as_view()),
     path('problems/import/', api.TeacherProblemImportView.as_view()),
     path('problems/imports/', api.TeacherProblemImportHistoryView.as_view()),
     path('teaching-classes/<int:teachingClassId>/dashboard/', api.TeacherClassDashboardView.as_view()),
