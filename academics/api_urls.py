@@ -1,5 +1,7 @@
 """教务业务 API 路由（挂在 /api/ 前缀下）"""
 from django.urls import path
+from .student_api import (StudentDetailView, StudentLeaveView, StudentListView,
+                          StudentMembershipListView, StudentTransferView)
 
 from .api import (AdminClassDetailView, AdminClassListView,
                   CourseCollegeView, CourseDetailView, CourseListView,
@@ -7,6 +9,11 @@ from .api import (AdminClassDetailView, AdminClassListView,
                   TeachingClassListView)
 
 urlpatterns = [
+    path('students/', StudentListView.as_view()),
+    path('students/<int:studentId>/', StudentDetailView.as_view()),
+    path('students/<int:studentId>/memberships/', StudentMembershipListView.as_view()),
+    path('students/<int:studentId>/transfer/', StudentTransferView.as_view()),
+    path('students/<int:studentId>/leave/', StudentLeaveView.as_view()),
     # 学院
     path('departments/', DepartmentListView.as_view()),
     # 课程

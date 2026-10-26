@@ -170,7 +170,7 @@ class StudentObjectPermissionTests(ObjectPermissionTestBase):
 
     def test_multi_class_teaching_class(self):
         """合班语义：教学班加入学生所在行政班后，该学生即可访问"""
-        self.otherTeachingClass.admin_classes.remove(self.otherAdminClass)
+        self.otherTeachingClass.delete()
         self.myTeachingClass.admin_classes.add(self.otherAdminClass)
         self.assertEqual(
             getStudentTeachingClass(self.student2, self.myTeachingClass.id),

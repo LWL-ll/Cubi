@@ -1,5 +1,6 @@
 from django.contrib import admin
 from django import forms
+from django.db import transaction
 
 from .services import validateTeachingClasses
 
@@ -69,6 +70,12 @@ class TeachingClassForm(forms.ModelForm):
                 validateTeachingClasses(cc, data['term'], classes,
                                         excludeId=self.instance.pk)
         return data
+
+    def _save_m2m(self):
+        with transaction.atomic(using=self.instance._state.db):
+            # 先加入新班，再由表单移除旧班，替换过程中仍保留组成班。
+            self.instance.admin_classes.add(*self.cleaned_data['admin_classes'])
+            super()._save_m2m()
 
 
 @admin.register(TeachingClass)

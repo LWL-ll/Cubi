@@ -9,8 +9,10 @@ from datetime import date
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import F
+from django.db.models.deletion import ProtectedError
+from django.utils import timezone
 
-from .models import ClassMembership, Course, CourseCollege, TeachingClass
+from .models import AdminClass, ClassMembership, Course, CourseCollege, TeachingClass
 
 
 def syncCourseTeamMembership(userId, using='default'):
@@ -86,3 +88,112 @@ def createTeachingClass(courseCollege, name, term, adminClasses):
     teachingClass.admin_classes.set(adminClasses)
     teachingClass.teachers.set(courseCollege.teachers.all())
     return teachingClass
+
+
+@transaction.atomic
+def deleteTeachingClass(teachingClass):
+    lockTeachingCourse(teachingClass.course_college)
+    current = TeachingClass.objects.filter(pk=teachingClass.pk).first()
+    if current is None:
+        raise ValidationError('教学班不存在')
+    try:
+        current.delete()
+    except ProtectedError:
+        raise ValidationError('教学班已有作业、资料或通知，不能解散') from None
+
+
+@transaction.atomic
+def deleteCourseCollege(courseCollege):
+    lockTeachingCourse(courseCollege)
+    current = CourseCollege.objects.filter(pk=courseCollege.pk).first()
+    if current is None:
+        raise ValidationError('课程×学院不存在')
+    try:
+        current.teaching_classes.all().delete()
+        current.delete()
+    except ProtectedError:
+        raise ValidationError('课程×学院下已有作业、资料或通知，不能解除') from None
+
+
+def lockAdminClassCourses(adminClass, using='default'):
+    """行政班删除与组班、候选池调整按同一课程顺序加锁。"""
+    courseIds = set(adminClass.course_colleges.using(using).values_list('course_id', flat=True))
+    courseIds.update(adminClass.teaching_classes.using(using).values_list(
+        'course_college__course_id', flat=True))
+    for courseId in sorted(courseIds):
+        Course.objects.using(using).filter(pk=courseId).update(id=F('id'))
+
+
+def validateAdminClassDeletion(adminClass, using='default'):
+    if ClassMembership.objects.using(using).filter(admin_class_id=adminClass.pk).exists():
+        raise ValidationError('行政班已有学生成员历史，不能删除')
+    if TeachingClass.objects.using(using).filter(admin_classes__pk=adminClass.pk).exists():
+        raise ValidationError('行政班仍属于教学班，请先调整教学班组成')
+
+
+@transaction.atomic
+def deleteAdminClass(adminClass):
+    lockAdminClassCourses(adminClass)
+    if not AdminClass.objects.filter(pk=adminClass.pk).update(id=F('id')):
+        raise ValidationError('行政班不存在')
+    current = AdminClass.objects.get(pk=adminClass.pk)
+    validateAdminClassDeletion(current)
+    current.delete()
+
+
+@transaction.atomic
+def removeCandidateAdminClass(courseCollege, adminClass):
+    lockTeachingCourse(courseCollege)
+    current = CourseCollege.objects.filter(pk=courseCollege.pk).first()
+    if current is None:
+        raise ValidationError('课程×学院不存在')
+    current.admin_classes.remove(adminClass)
+
+
+@transaction.atomic
+def removeTeachingAdminClass(teachingClass, adminClass):
+    lockTeachingCourse(teachingClass.course_college)
+    current = TeachingClass.objects.filter(pk=teachingClass.pk).first()
+    if current is None:
+        raise ValidationError('教学班不存在')
+    current.admin_classes.remove(adminClass)
+
+
+def _lockStudentProfile(profile):
+    if not type(profile).objects.filter(pk=profile.pk).update(id=F('id')):
+        raise ValidationError('学生档案不存在')
+    return type(profile).objects.select_related('major__department').get(pk=profile.pk)
+
+
+@transaction.atomic
+def transferStudentToday(profile, adminClass):
+    """普通转班只改变当日成员关系，保留学生账号、学籍和历史提交。"""
+    profile = _lockStudentProfile(profile)
+    if not AdminClass.objects.filter(pk=adminClass.pk).update(id=F('id')):
+        raise ValidationError('目标行政班不存在')
+    target = AdminClass.objects.select_related('major__department').get(pk=adminClass.pk)
+    if (target.major_id != profile.major_id or target.enrollment_year is None
+            or target.enrollment_year != profile.enrollment_year):
+        raise ValidationError('普通转班只能选择同专业、同入学年份的行政班')
+    if not target.major.is_active or not target.major.department.is_active:
+        raise ValidationError('目标行政班所属专业或学院未启用')
+    today = timezone.localdate()
+    current = profile.memberships.filter(left_at__isnull=True).first()
+    if current is not None and current.joined_at > today:
+        raise ValidationError('原入班日期晚于今天，不能办理当日转班')
+    return enrollStudent(profile, target, today)
+
+
+@transaction.atomic
+def leaveStudentToday(profile):
+    """当日退班留痕；重复退班无操作，不改变学生学籍状态。"""
+    profile = _lockStudentProfile(profile)
+    current = profile.memberships.filter(left_at__isnull=True).first()
+    if current is None:
+        return None
+    today = timezone.localdate()
+    if current.joined_at > today:
+        raise ValidationError('原入班日期晚于今天，不能办理当日退班')
+    current.left_at = today
+    current.save(update_fields=['left_at'])
+    return current

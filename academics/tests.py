@@ -308,10 +308,17 @@ class AdminClassApiTests(OfficeApiTestBase):
             self._call(AdminClassListView, self.teacher).status_code, 403)
 
     def test_delete_success(self):
+        idle = AdminClass.objects.create(name='闲置行政班', major=self.major, enrollment_year=2023)
+        resp = self._call(AdminClassDetailView, self.adminUser, method='delete',
+                          adminClassId=idle.id)
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(AdminClass.objects.filter(id=idle.id).exists())
+
+    def test_delete_teaching_class_member_rejected(self):
         resp = self._call(AdminClassDetailView, self.adminUser, method='delete',
                           adminClassId=self.adminClass.id)
-        self.assertEqual(resp.status_code, 200)
-        self.assertFalse(AdminClass.objects.filter(id=self.adminClass.id).exists())
+        self.assertEqual(resp.status_code, 400)
+        self.assertTrue(self.teachingClass.admin_classes.filter(pk=self.adminClass.pk).exists())
 
     def test_delete_requires_class_manage(self):
         self.assertEqual(
@@ -356,10 +363,10 @@ class TeachingClassApiTests(OfficeApiTestBase):
         self.assertEqual(resp.status_code, 403)
 
     def test_create_success_inherits_teacher_pool(self):
-        self.teachingClass.admin_classes.remove(self.adminClass)
         resp = self._call(
             TeachingClassListView, self.adminUser, method='post',
             data={'name': '矩阵二班', 'courseCollegeId': self.cc.id,
+                  'term': '2027-2028-1',
                   'adminClassIds': [self.adminClass.id]})
         self.assertEqual(resp.status_code, 201)
         teachingClass = TeachingClass.objects.get(name='矩阵二班')

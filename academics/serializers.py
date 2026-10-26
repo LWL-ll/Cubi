@@ -19,8 +19,12 @@ class DepartmentBriefSerializer(serializers.ModelSerializer):
 
 class DepartmentSerializer(serializers.ModelSerializer):
     """学院详情：含行政班数量"""
-    adminClassCount = serializers.IntegerField(
-        source='admin_classes.count', read_only=True)
+    adminClassCount = serializers.SerializerMethodField()
+
+    def get_adminClassCount(self, obj):
+        count = getattr(obj, 'adminClassCount', None)
+        return count if count is not None else AdminClass.objects.filter(
+            major__department=obj).count()
 
     class Meta:
         model = Department
@@ -53,8 +57,10 @@ class CourseBriefSerializer(serializers.ModelSerializer):
 
 class AdminClassBriefSerializer(serializers.ModelSerializer):
     """行政班简要信息（课程×学院/教学班详情里嵌套展示用）"""
-    studentCount = serializers.IntegerField(
-        source='memberships.count', read_only=True)
+    studentCount = serializers.SerializerMethodField()
+
+    def get_studentCount(self, obj):
+        return obj.memberships.filter(left_at__isnull=True).count()
 
     class Meta:
         model = AdminClass
@@ -143,11 +149,15 @@ class AdminClassSerializer(serializers.ModelSerializer):
     major = MajorSerializer(read_only=True)
     courses = serializers.SerializerMethodField()
     students = serializers.SerializerMethodField()
+    studentCount = serializers.SerializerMethodField()
 
     class Meta:
         model = AdminClass
         fields = ['id', 'name', 'code', 'major', 'enrollment_year',
-                  'courses', 'students']
+                  'courses', 'students', 'studentCount']
+
+    def get_studentCount(self, obj):
+        return obj.memberships.filter(left_at__isnull=True).count()
 
     def get_courses(self, obj):
         """班级的课程 = 关联到本班级的所有 课程×学院 里的课程"""
