@@ -520,7 +520,7 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 ### 5.10 迁移与验证
 
 - teaching.0006_teacher_backend 包含 SubmissionReview、TeachingMaterial 及题目编号作用域唯一约束；已于 2026-10-26 在本地业务库备份后应用，原有 35 张非元数据表逐行校验未变。生产环境仍须独立确认迁移状态。
-- 新增 teaching.0007_teacher_communication：ClassNotice、NoticeRead、HomeworkReminder、HomeworkAnswer 及 Homework.answers_released_at；本轮不应用业务库，部署启用新接口前须备份并应用迁移。
+- teaching.0007_teacher_communication 包含 ClassNotice、NoticeRead、HomeworkReminder、HomeworkAnswer 及 Homework.answers_released_at；已于 2026-10-26 在本地业务库备份后应用，备份为 `db.sqlite3.backup-20261026-200124-648249`。新增四表初始为空，现有作业公开时间均为 NULL，原有 37 张非元数据业务表逐行指纹不变；SQLite 完整性与外键检查通过，无待应用迁移。元数据仅新增 1 条迁移、4 个 content type 和 16 个原生模型权限，原 22 个显式权限及角色关联不变；生产环境仍须独立确认迁移状态。
 - 若已产生跨教师同编号题目，恢复旧版全局唯一约束前须先处理重复编号；不自动删除或合并题目。
 - 验证命令：`python manage.py test teaching.tests_notices teaching.tests_reminders teaching.tests_answers`、`python manage.py test`、`python manage.py check`、`python manage.py makemigrations --check --dry-run`。本轮不修改前端或连接真实判题沙箱。
 - 本轮验证（2026-10-26）：新增 **49 项**回归（通知 10、提醒 16、答案 23），全量 **455 项测试通过**；`manage.py check` 与 `makemigrations --check --dry-run` 通过。迁移快照测试使用迁移前后历史模型验证旧表结构，避免以当前模型查询旧版字段。
