@@ -10,9 +10,12 @@
 from django.urls import path
 
 from .api import (StudentHomeworkDetailView, StudentHomeworkListView,
-                  StudentProblemDetailView)
+                  StudentProblemDetailView, StudentMaterialListView,
+                  StudentMaterialDownloadView)
 
 urlpatterns = [
+    path('teaching-classes/<int:teachingClassId>/materials/', StudentMaterialListView.as_view()),
+    path('materials/<int:materialId>/download/', StudentMaterialDownloadView.as_view()),
     path('problems/<int:problemId>/', StudentProblemDetailView.as_view()),
     path('homeworks/', StudentHomeworkListView.as_view()),
     path('homeworks/<int:homeworkId>/', StudentHomeworkDetailView.as_view()),

@@ -174,6 +174,8 @@ STATIC_URL = 'static/'
 # 媒体文件（班级资料、作业图片提交依赖；受保护下载见《后端落地问题清单》2.6）
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+# 班级教学资料不进入公开 media 目录，只能通过已授权的下载接口读取。
+PRIVATE_MATERIAL_ROOT = BASE_DIR / 'private_uploads'
 
 
 # Email

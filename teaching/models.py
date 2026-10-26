@@ -83,11 +83,11 @@ class Problem(models.Model):
                               null=True, verbose_name='归属教师',
                               related_name='owned_problems')
     is_public = models.BooleanField('公共题库', default=False)
-    # 批量导入溯源：source_code 是清单里的稳定编号（个人题/手工题为空），
+    # 批量导入溯源：source_code 是清单里的稳定编号（手工题为空），
     # source_hash 是 markdown 原文 SHA256，重复导入时据此判断内容是否变化。
-    # unique=True + null=True：SQLite/MySQL 都允许多个 NULL，个人题互不冲突。
+    # 编号按公共题库/教师本人题库分别去重，手工题可以为空。
     source_code = models.CharField('导入编号', max_length=128, null=True,
-                                   blank=True, unique=True)
+                                   blank=True)
     source_hash = models.CharField('源文件哈希', max_length=64, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
@@ -96,6 +96,14 @@ class Problem(models.Model):
         verbose_name = '题目'
         verbose_name_plural = '题目'
         ordering = ['-updated_at']
+        constraints = [
+            models.UniqueConstraint(fields=['source_code'],
+                                    condition=models.Q(is_public=True),
+                                    name='uniq_public_problem_code'),
+            models.UniqueConstraint(fields=['owner', 'source_code'],
+                                    condition=models.Q(is_public=False),
+                                    name='uniq_teacher_problem_code'),
+        ]
 
     def __str__(self):
         return f'{self.title}（v{self.revision}）'
@@ -371,3 +379,40 @@ class AgentTutorReport(models.Model):
 
     def __str__(self):
         return f'提交 #{self.submission_id} 讲题（{self.get_status_display()}）'
+
+
+class SubmissionReview(models.Model):
+    """教师评阅独立于判题结果；同班授课教师共同维护当前批语。"""
+    submission = models.OneToOneField(
+        Submission, models.CASCADE, related_name='teacher_review')
+    comment = models.TextField('批语', max_length=5000)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, models.SET_NULL, null=True,
+        related_name='submission_reviews')
+    created_at = models.DateTimeField('首次评阅时间', auto_now_add=True)
+    updated_at = models.DateTimeField('最近评阅时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '提交评阅'
+        verbose_name_plural = '提交评阅'
+
+
+class TeachingMaterial(models.Model):
+    """班级资料只保存私有存储标识，通过受保护接口下载。"""
+    teaching_class = models.ForeignKey(
+        TeachingClass, models.PROTECT, related_name='materials')
+    title = models.CharField('标题', max_length=100)
+    description = models.TextField('说明', max_length=2000, blank=True)
+    storage_name = models.CharField('私有存储标识', max_length=255)
+    original_name = models.CharField('原文件名', max_length=255)
+    size = models.PositiveBigIntegerField('文件字节数')
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, models.SET_NULL, null=True,
+        related_name='teaching_materials')
+    created_at = models.DateTimeField('上传时间', auto_now_add=True)
+    updated_at = models.DateTimeField('修改时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '班级资料'
+        verbose_name_plural = '班级资料'
+        ordering = ['-created_at', '-id']

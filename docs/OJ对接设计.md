@@ -158,7 +158,7 @@ go-judge 的 `status` 为**原始带空格字面量**，共 9 种。**客户端�
 | 3 | 判题执行 | 编译 1 次 `copyOutCached` 产物复用；**全测试点执行聚合部分分**（不再提前终止）；三档资源限制显式携带 |
 | 4 | 数据模型 | Problem / Homework / Submission / JudgeTask 四张表 + Homework–Problem 中间表；题目快照（revision）随提交冻结；测试用例 DB JSON 永不下发 |
 | 5 | 一期范围 | practice + homework（exam 留枚举位）；**SPJ 一期做**（Python + 部分分协议）；交互题/跨用户查重/考试模式二期 |
-| 6 | 录题方式 | 系统管理员 ZIP 批量导入公共题库（题面+样例+测试点+分值+spj）；教师个人题库仍可单题 markdown 录入 |
+| 6 | 录题方式 | 系统管理员 ZIP 导入公共题库；教师 ZIP 导入本人个人题库，仍支持单题 markdown 录入 |
 | 7 | 权限码 | **全部复用现有 22 码**（users/models.py Meta.permissions，零新增；2026-10-20 删除 question_bank:manage） |
 | 8 | 查询 API | 学生提交历史；教师教学班聚合 + 成绩导出 xlsx |
 | 9 | 安全红线 | 测试点/预期输出/他人代码/SPJ 输出永不下发；`statement_md` 为剔除受保护代码块后重建的正文；日志禁记测试数据 |
@@ -343,7 +343,8 @@ class Problem(models.Model):
     revision = models.PositiveIntegerField('修订号', default=1)  # 每次修改题目 +1
     owner = models.ForeignKey(User, SET_NULL, null=True)       # 归属：教师个人 / 系统管理员导入的公共题；删号题目保留
     is_public = models.BooleanField('公共题库', default=False)
-    source_code = models.CharField('导入编号', max_length=128, unique=True, null=True)
+    source_code = models.CharField('导入编号', max_length=128, null=True)
+    # 条件唯一约束：公共题库按 code；个人题库按 owner + code
     source_hash = models.CharField('源文件哈希', max_length=64)  # 重复导入去重
     created_at / updated_at
 
@@ -518,7 +519,9 @@ POST /run 跑 spj：
 ### 12.2 查询 API 形态
 
 - 学生：`GET /api/submissions/`（自己的提交历史，按题/作业过滤分页）；`GET /api/submissions/<id>/`（详情含 `{status, progress, score, totalScore}`，对象级：非本人 404，超管放行）
-- 教师：`GET /api/teacher/teaching-classes/<id>/submissions/`（教学班提交聚合：谁没交、通过率、成绩导出 xlsx——`analysis:view` + `getTeacherTeachingClass` 对象级校验）
+- 教师：`GET /api/teacher/teaching-classes/<id>/submissions/` 为提交明细分页；dashboard/students 为当前班级看板，`GET /api/teacher/homeworks/<id>/grades/` 与其 `export/` 为成绩及 xlsx。均使用 `analysis:view` 和任教对象校验。
+- 成绩按每题最高有效终态分数合计；排队、系统错误及重复提交不作为成绩。未出分为 null，已有有效成绩不被后续排队清零；教师与学生列表使用同一口径。
+- 评语使用独立 SubmissionReview，`homework:comment` 允许本班教师维护；学生原提交详情只返回自己的 teacherReview，不改写自动判题结果。
 - 代码原文访问：学生仅自己的 code；教师仅自己教学班学生的 code（对象级 404 语义）
 - 学生可见字段白名单：code 原文、自己的 score/time_used 等本人字段；**不含**测试点数据、预期输出、spj 输出、他人提交
 
@@ -563,12 +566,13 @@ POST /run 跑 spj：
 `tier`、`languages`、`compareStrategy`；支持中文档位/策略别名。
 
 **导入语义**：
-- 导入题目一律进入公共题库（`is_public=True`），`owner` 为执行导入的管理员
-- `Problem.source_code` 唯一 + `source_hash` 记录 markdown 原文 SHA256：
+- 管理员入口进入公共题库；2026-10-26 新增教师入口 `POST /api/teacher/problems/import/`，固定进入当前教师个人题库，不接受客户端指定归属。
+- `Problem.source_code` 在公共题库内唯一、在个人题库按 owner + code 唯一；`source_hash` 记录 markdown 原文 SHA256：
   内容未变 → 跳过；内容变化且 `overwrite=True` → 更新并 `revision+1`；否则逐条报错
 - 坏 md、缺文件、未登记文件、重复 code 只影响对应行，其余题正常导入
 - 限制：ZIP ≤64MB、解压总量 ≤256MB、单题 md ≤6MB、单批 ≤2000 题
 - 每次导入写一条 `AsyncTask(type=import)` 记录，管理页可查看最近批次
+- 教师可在 `GET /api/teacher/problems/imports/` 查看本人个人题库批次（含失败记录），不读取管理员或其他教师的批次。
 
 **规模化适配**：教师题库列表与作业选题面板支持 `q`（标题关键词）、`tier` 筛选和
 分页加载；1000 题规模下不再一次性拉全量。

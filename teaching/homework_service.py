@@ -18,7 +18,7 @@ import logging
 from collections.abc import Mapping
 
 from django.db import transaction
-from django.db.models import Count, F, Max, Q
+from django.db.models import Count, F, Q
 from django.http import Http404
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -216,13 +216,12 @@ def getStudentHomeworkQuery(user):
 
 
 def annotateStudentStats(homeworkQuery, user):
-    """学生列表统计聚合：题数 + 我的提交数 + 我的最高分（单次查询）"""
-    return homeworkQuery.annotate(
+    """学生与教师使用同一口径：每题最高有效分，再合计为作业成绩。"""
+    from .teacher_service import annotateOwnBestScores
+    return annotateOwnBestScores(homeworkQuery.annotate(
         problemCount=Count('problems', distinct=True),
         mySubmitCount=Count('submissions',
-                            filter=Q(submissions__user=user), distinct=True),
-        myBestScore=Max('submissions__score',
-                        filter=Q(submissions__user=user)))
+                            filter=Q(submissions__user=user), distinct=True)), user)
 
 
 def getStudentHomework(user, homeworkId):

@@ -8,6 +8,7 @@ db.sqlite3.backup-*
 
 # 用户上传文件（运行时生成）
 media/
+private_uploads/
 
 # 环境变量（SECRET_KEY / DJANGO_DEBUG / OJ_AUTH_TOKEN 等敏感配置，禁止入库）
 .env

@@ -1,7 +1,7 @@
 # CodeMind 教辅平台 · API 设计文档
 
-> 更新时间：2026-10-18
-> 状态：认证/教务/教师工作台 API 已实现并测试通过（V2 表结构：学院/专业/行政班/教学班四层）；教师班级内业务 API（通知/作业等）随功能轮次补充
+> 更新时间：2026-10-26
+> 状态：教师个人题库导入、班级看板、提交评阅、成绩导出、私有资料与个人资料 API 已补齐；本轮仅后端，新增迁移尚未应用业务库。
 > 配套文档：《用户权限设计.md》（权限码与校验机制）、《数据库表重构设计.md》（V2 表结构与迁移）、《教学班级设计.md》（教学班模型决策）
 
 ## 一、总则
@@ -24,7 +24,7 @@
 | 403 | 功能级拒绝 | 未登录、无该功能权限码、非教师组访问教师接口 |
 | 404 | 对象级不可见 | 资源不存在**或无权访问该对象**——对象级校验统一返回 404，不暴露对象存在性 |
 
-错误响应统一格式：`{"error": "具体原因"}`。
+认证及部分教务接口返回 `{"error": "具体原因"}`；DRF 权限和对象错误返回 `{"detail": "具体原因"}`，参数校验可能返回字段错误字典或错误列表。客户端须同时处理 HTTP 状态与响应内容。
 
 ### 1.3 导入文件约定
 
@@ -384,7 +384,7 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 
 ---
 
-## 五、管理员题库导入接口（前缀 `/api/admin/`）
+## 五、题库导入与教师后端接口
 
 ### 5.1 `POST /api/admin/problems/import/` — ZIP 批量导入公共题库
 
@@ -396,6 +396,84 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 - 完整包格式、限制与操作步骤见 `docs/题库批量导入.md`
 
 ---
+
+### 5.2 教师个人题库批量导入
+
+| 方法与路径 | 权限 | 行为 |
+|---|---|---|
+| `POST /api/teacher/problems/import/` | homework:bank | ZIP 导入本人个人题库 |
+| `GET /api/teacher/problems/imports/` | homework:bank | 本人个人题库导入历史，分页 20 |
+
+- 文件包和校验限制复用公共导入格式；单批 ZIP ≤64MB、题数 ≤2000。
+- POST 仅接受 multipart `file`、`overwrite`；后者支持 `true/false/1/0/on/off`，默认 false。归属取当前会话，不接受 ownerId、isPublic 等字段。
+- 题目编号在公共题库内唯一；个人题编号按教师分别唯一。公共题及不同教师可使用同一 code，覆盖导入只能修改本库题目；历史作业快照不变。
+- 返回原有计数和错误明细，另含 `scope: personal`。历史返回 `id/status/createdAt/finishedAt/result/error`，包含失败批次，不包含他人或公共题库批次。
+
+### 5.3 教师班级看板与成绩
+
+以下接口均要求 `analysis:view`，并校验当前教师任教关系；对象不可见统一 404。
+
+| 方法与路径 | 内容 |
+|---|---|
+| `GET /api/teacher/teaching-classes/<id>/dashboard/` | 班级人数、作业数、各作业提交/完成/通过人数、待判/未评阅提交数量及平均分 |
+| `GET /api/teacher/teaching-classes/<id>/students/` | 当前学生看板，分页 20；支持 q 按姓名、账号、学号搜索 |
+| `GET /api/teacher/teaching-classes/<id>/students/<studentId>/` | 当前在班学生的各作业和各题成绩、进度 |
+| `GET /api/teacher/homeworks/<id>/grades/` | 作业成绩表，分页 20；支持 q、submissionState |
+| `GET /api/teacher/homeworks/<id>/grades/export/` | 相同筛选范围的 xlsx 成绩表，附件下载 |
+
+**统一成绩口径**：
+
+- 每题取该学生、该作业内最高有效终态得分，再合计；`queued/running/system_error/repeat` 不作为有效成绩。编译错误、答案错误等正常判题终态可以是有效 0 分。
+- 无有效结果返回 score=null；已有有效成绩不因再次排队而清零。pendingCount 单独展示，gradingComplete 表示各题均已有有效成绩，班级平均分只统计这部分学生。
+- totalScore 与题目标题取作业冻结快照；实时改题不改变历史作业。学生作业列表 myBestScore 使用同一逐题合计口径。
+- submissionState：`not_submitted` 全部未交，`partial` 部分题已交，`submitted` 每题都有提交；不等同于全部通过，passed 单独返回。系统错误也属于已提交，不能混入未提交名单。
+- 看板、成绩与未交名单按当前在班成员计算；转班前的提交仍可通过本班提交列表和详情查看，不删除历史数据。
+- grades 响应含 `homeworkId/title/problems/summary/count/next/previous/results`；summary 始终为全班统计，count/results 随筛选变化。未提交筛选使用 `submissionState=not_submitted`。
+- 每个学生行包含身份简要信息、score/totalScore、各题 problems、提交/待判/未评阅数量、完成状态。导出保留相同学生和题序；没有学生也保留题目列；姓名、题名等按 Excel 文本写入，不执行公式。
+
+### 5.4 提交查看与评阅
+
+| 方法与路径 | 权限 | 内容 |
+|---|---|---|
+| `GET /api/teacher/teaching-classes/<id>/submissions/` | analysis:view | 班级提交列表，分页 20；筛选 homework/student/problem/status/reviewed |
+| `GET /api/teacher/submissions/<id>/` | analysis:view | 代码、脱敏判题结果、当前教师批语 |
+| `GET/PUT/DELETE /api/teacher/submissions/<id>/review/` | homework:comment | 当前批语读取、保存或删除 |
+
+- 筛选 ID 必须为正整数；reviewed 仅接受 true/false。列表不返回代码原文，详情不返回隐藏测试点、判题快照、SPJ 或沙箱内部标识。
+- PUT 只接受 `{"comment":"批语"}`，1～5000 字；评阅教师取当前会话。同班授课教师可共同维护，一次提交仅保存一份当前批语，并记录首次/最近评阅时间；不改写原始判题分数。
+- GET/PUT 返回 `{"review": {...}}`；未评阅时 GET 返回 `{"review": null}`。DELETE 成功 204，该提交恢复未评阅状态。
+- 学生原提交详情新增 teacherReview（批语、教师、时间），只对本人可读；他人提交或非任教教师与资源不存在时均为相同 404。
+
+### 5.5 班级教学资料
+
+| 方法与路径 | 权限 | 内容 |
+|---|---|---|
+| `GET/POST /api/teacher/teaching-classes/<id>/materials/` | material:class_manage | 列表分页 20、上传（成功 201） |
+| `GET/PATCH/DELETE /api/teacher/materials/<id>/` | material:class_manage | 元数据读取、修改或替换文件、删除 |
+| `GET /api/teacher/materials/<id>/download/` | material:class_manage | 任教教师附件下载 |
+| `GET /api/teaching-classes/<id>/materials/` | material:view | 当前班级学生只读列表，分页 20 |
+| `GET /api/materials/<id>/download/` | material:view | 当前班级学生附件下载 |
+
+- 上传须 multipart，title 必填（≤100 字）、description 可选（≤2000 字）、file 必填；PATCH 只接受这三个字段，替换文件时使用 multipart。
+- 单文件非空且 ≤50MB；允许扩展名 pdf/doc/docx/xls/xlsx/ppt/pptx/txt/md/csv/zip/c/py，不展开压缩包。文件均以二进制附件下载。
+- 50MB 为应用层限制，部署时反向代理上传上限须覆盖文件和 multipart 开销，私有目录须允许应用账号读写。
+- 存储在 PRIVATE_MATERIAL_ROOT（默认项目 private_uploads），使用随机文件名；该目录不可配置为公开静态目录。API 只返回原文件名、大小、标题、说明、上传人和时间，不返回物理路径、存储标识或公开 URL。
+- 下载前检查班级访问权限，离班立即失去下载权限；教师也只能管理任教班级资料。
+- 替换/删除在数据库提交后清理旧文件，保存失败清理新文件；旧文件清理发生磁盘故障时记录随机标识供运维处理，已删除资料不能继续经 API 下载。
+
+### 5.6 个人资料
+
+- `GET/PATCH /api/auth/profile/`，权限 profile:edit，四类角色共用；首次登录仍须先改密。
+- GET 返回 username/name/email、只读学校身份列表，以及教师职称和所属学院（无教师档案时 teacher=null）。
+- PATCH 仅接受 name（非空、≤50 字）、email（合法邮箱或空字符串）、title（≤50 字，须已有教师档案），部分更新。
+- 工号/学号、账号、角色、权限、密码、所属学院及任教关系不可通过本接口修改。未知字段或非法数据整次拒绝，不产生部分更新；教师档案不会由该接口自行创建。
+
+### 5.7 本轮迁移与验证
+
+- 新增 teaching.0006_teacher_backend：SubmissionReview、TeachingMaterial，以及题目编号作用域唯一约束。本轮仅在测试库迁移；部署启用新接口前须备份并应用该迁移。
+- 若已产生跨教师同编号题目，恢复旧版全局唯一约束前须先处理重复编号；不自动删除或合并题目。
+- 验证命令：`python manage.py test`、`python manage.py check`、`python manage.py makemigrations --check --dry-run`。本轮不修改前端或连接真实判题沙箱。
+- 2026-10-26 验证结果：新增 42 项教师后端/资料/个人资料回归，全量 **406 项测试通过**；系统检查、迁移一致性和差异检查通过。
 
 ## 六、附录
 
@@ -418,9 +496,9 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 
 ### 6.3 后续规划（随功能轮次补充）
 
-- 教师教学班内业务 API：通知 CRUD（notice:manage）、学情图表（analysis:view）、班级资料 CRUD（material:class_manage）、作业提醒（homework:remind）、批改（homework:comment/answer/ai）
+- 教师通知 CRUD（notice:manage）、作业提醒（homework:remind）、答案管理与 AI 扩展仍待后续；班级成绩看板、私有资料和提交批语已于 2026-10-26 实现后端。
 - 课程组业务 API（knowledge:manage / material:class_visible / chapter:manage）
-- 学生画像 API（analysis:view_self）、个人资料 API（profile:edit）
+- 学生画像 API（analysis:view_self）待开发；个人资料 API（profile:edit）已实现。
 - 所有教师业务 API 必须套 `getTeacherTeachingClass`、学生业务 API 套 `getStudentTeachingClass` 对象级校验
 
 > 已落地（2026-10-20）：题库 API（公共题库 + 个人题库、筛选/分页）、作业组卷/学生作业/提交 API、管理员 ZIP 批量导入 API。

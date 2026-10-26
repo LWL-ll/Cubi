@@ -1,4 +1,4 @@
-"""题库 ZIP 批量导入服务（仅系统管理员使用）
+"""题库 ZIP 批量导入服务（管理员公共题库、教师本人题库）
 
 导入包结构：
 - manifest.xlsx / manifest.csv：清单（file 必填；code/tier/languages/
@@ -8,7 +8,7 @@
 设计要点：
 - 全程在内存中读取 ZIP，不落盘；逐项校验路径穿越、加密、大小上限
 - 复用 parseAndApply 解析 markdown 与元数据，和单题录题走同一套校验
-- source_code 唯一：默认取 file 路径；source_hash 识别内容变化
+- source_code 在公共题库/教师本人题库内唯一；source_hash 识别内容变化
   → 未变化跳过；变化且 overwrite=True 更新并 revision+1；否则报错
 - 同步执行，AsyncTask 仅作为导入历史记录（约 1000 题秒级完成）
 
@@ -24,15 +24,18 @@ import posixpath
 import re
 import zipfile
 
-from django.db import transaction
+from django.contrib.auth import get_user_model
+from django.db import IntegrityError, transaction
+from django.db.models import F
 from django.utils import timezone
 from openpyxl import load_workbook
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from tasks.models import AsyncTask
 from teaching.models import Problem
 from teaching.problem_markdown import MAX_MARKDOWN_BYTES
 from teaching.problem_service import parseAndApply, validateMetadata
+from users.permissions import hasPerm
 
 logger = logging.getLogger('codemind.problem')
 
@@ -330,13 +333,16 @@ def failBatch(batch, message):
     batch.save(update_fields=['status', 'error', 'finished_at'])
 
 
-def importProblemZip(user, zipFile, overwrite=False):
+def importProblemZip(user, zipFile, overwrite=False, *, isPublic=True):
     """批量导入题库 ZIP → 结果字典
 
     返回值：
       {total, createdCount, updatedCount, skippedCount, errorCount, errors}
     预期内的文件/题目错误以 errors 逐条返回；整体失败抛 ValidationError。
     """
+    if (isPublic and not user.is_superuser) or (
+            not isPublic and not hasPerm(user, 'homework:bank')):
+        raise PermissionDenied('没有题库导入权限')
     if getattr(zipFile, 'size', 0) > MAX_ZIP_BYTES:
         raise ValidationError('ZIP 文件超过 64MB 上限')
     batch = AsyncTask.objects.create(
@@ -344,9 +350,10 @@ def importProblemZip(user, zipFile, overwrite=False):
         status=AsyncTask.STATUS_RUNNING,
         created_by=user,
         started_at=timezone.now(),
+        result={'scope': 'public' if isPublic else 'personal'},
     )
     try:
-        result = runImport(zipFile, user, overwrite)
+        result = runImport(zipFile, user, overwrite, isPublic=isPublic)
     except ValidationError as exc:
         failBatch(batch, formatErrorDetail(exc))
         raise
@@ -357,6 +364,7 @@ def importProblemZip(user, zipFile, overwrite=False):
     batch.total = result['total']
     batch.progress = 100
     result['batchId'] = batch.id
+    result['scope'] = 'public' if isPublic else 'personal'
     batch.result = result
     batch.status = AsyncTask.STATUS_DONE
     batch.finished_at = timezone.now()
@@ -365,7 +373,7 @@ def importProblemZip(user, zipFile, overwrite=False):
     return result
 
 
-def runImport(zipFile, user, overwrite):
+def runImport(zipFile, user, overwrite, *, isPublic=True):
     """执行导入（不含批次状态处理，便于单元测试直接调用）"""
     zipFile.seek(0)
     try:
@@ -378,19 +386,20 @@ def runImport(zipFile, user, overwrite):
             # 清单行数 = 合法记录 + 清单层错误（未通过文件/元数据校验的行）
             totalRows = len(records) + len(errors)
             return processRecords(archive, entries, records, errors,
-                                  manifestFiles, totalRows, user, overwrite)
+                                  manifestFiles, totalRows, user, overwrite,
+                                  isPublic=isPublic)
     except (zipfile.BadZipFile, zipfile.LargeZipFile, OSError):
         raise ValidationError('不是有效的 ZIP 文件')
 
 
-def buildProblemFromEntry(archive, info, record, user):
+def buildProblemFromEntry(archive, info, record, user, *, isPublic=True):
     """读取并解析单个 md → 未落库的 Problem（校验失败抛 ValidationError）"""
     rawBytes = readZipEntry(archive, info, MAX_MARKDOWN_BYTES)
     try:
         markdown = rawBytes.decode('utf-8-sig')
     except UnicodeDecodeError:
         raise ValidationError('markdown 必须是 UTF-8 编码')
-    problem = Problem(owner=user, is_public=True, revision=1,
+    problem = Problem(owner=user, is_public=isPublic, revision=1,
                       source_code=record['code'])
     problem.source_hash = hashlib.sha256(rawBytes).hexdigest()
     parseAndApply(problem, {'markdown': markdown, **record['meta']})
@@ -402,8 +411,6 @@ def applyExistingProblem(existing, problem, overwrite, now):
 
     动作：skip（未变化）/ update（覆盖）/ error（不可覆盖）
     """
-    if not existing.is_public:
-        return 'error', '该编号已被教师个人题占用，不能导入公共题'
     changed = (
         existing.source_hash != problem.source_hash
         or any(getattr(existing, field) != getattr(problem, field)
@@ -421,11 +428,14 @@ def applyExistingProblem(existing, problem, overwrite, now):
 
 
 def collectProblemChanges(archive, entryByPath, records, errors, user,
-                          overwrite, now):
+                          overwrite, now, *, isPublic=True):
     """逐题解析与去重：返回 (created, updated, skippedCount)"""
+    existingQuery = Problem.objects.select_for_update().filter(is_public=isPublic)
+    if not isPublic:
+        existingQuery = existingQuery.filter(owner=user)
     existingByCode = {
         problem.source_code: problem
-        for problem in Problem.objects.filter(
+        for problem in existingQuery.filter(
             source_code__in=[record['code'] for record in records])
     }
     created = []
@@ -439,7 +449,7 @@ def collectProblemChanges(archive, entryByPath, records, errors, user,
             continue
         try:
             problem = buildProblemFromEntry(archive, entry['info'], record,
-                                            user)
+                                            user, isPublic=isPublic)
         except ValidationError as exc:
             errors.append({'file': record['file'],
                            'reason': formatErrorDetail(exc)})
@@ -462,7 +472,7 @@ def collectProblemChanges(archive, entryByPath, records, errors, user,
 
 
 def processRecords(archive, entries, records, errors, manifestFiles,
-                   totalRows, user, overwrite):
+                   totalRows, user, overwrite, *, isPublic=True):
     """建立条目索引 + 未登记检查 + 批量落库"""
     # 建立 ZIP 条目索引：精确路径 + 小写路径（兼容大小写差异）
     entryByPath = {}
@@ -482,14 +492,19 @@ def processRecords(archive, entries, records, errors, manifestFiles,
             })
 
     now = timezone.now()
-    created, updated, skippedCount = collectProblemChanges(
-        archive, entryByPath, records, errors, user, overwrite, now)
-    with transaction.atomic():
-        if created:
-            Problem.objects.bulk_create(created, batch_size=200)
-        if updated:
-            Problem.objects.bulk_update(updated, fields=UPDATE_FIELDS,
-                                        batch_size=200)
+    try:
+        with transaction.atomic():
+            get_user_model().objects.filter(pk=user.pk).update(id=F('id'))
+            created, updated, skippedCount = collectProblemChanges(
+                archive, entryByPath, records, errors, user, overwrite, now,
+                isPublic=isPublic)
+            if created:
+                Problem.objects.bulk_create(created, batch_size=200)
+            if updated:
+                Problem.objects.bulk_update(updated, fields=UPDATE_FIELDS,
+                                            batch_size=200)
+    except IntegrityError:
+        raise ValidationError('题库发生并发修改，请重新导入')
     return {
         'total': totalRows,
         'createdCount': len(created),

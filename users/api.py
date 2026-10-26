@@ -6,8 +6,21 @@ from rest_framework.authentication import SessionAuthentication
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
-from .permissions import GROUP_NAMES, PERM_CODES, getGroupKey
+from .permissions import GROUP_NAMES, PERM_CODES, PermRequired, getGroupKey
+from .profile_service import profileData, updateProfile
+
+
+class ProfileView(APIView):
+    permission_classes = [PermRequired]
+    permCode = 'profile:edit'
+
+    def get(self, request):
+        return Response(profileData(request.user))
+
+    def patch(self, request):
+        return Response(updateProfile(request.user, request.data))
 
 
 @api_view(['POST'])

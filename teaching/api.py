@@ -5,8 +5,10 @@
 - 详情接口先过 getTeacherTeachingClass 对象级校验，非本班教师一律 404
 - 后续功能接口（通知/作业等）都必须沿用这套校验
 """
+from collections.abc import Mapping
+
 from django.db.models import Q
-from django.http import Http404
+from django.http import FileResponse, Http404, HttpResponse
 from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.views import APIView
@@ -16,8 +18,18 @@ from academics.models import TeachingClass
 from academics.serializers import TeachingClassSerializer
 from teaching.models import Problem, Submission
 from users.permissions import IsSuperUser, IsTeacherGroup, PermRequired
+from tasks.models import AsyncTask
 
-from .helpers import getTeacherTeachingClass
+from .helpers import getStudentTeachingClass, getTeacherTeachingClass
+from .models import SubmissionReview
+from .problem_import import importProblemZip
+from .serializers import (SubmissionReviewSerializer, TeacherSubmissionDetailSerializer,
+                          TeacherSubmissionSerializer, TeachingMaterialSerializer)
+from .teacher_service import (classDashboard, classRoster, exportGradebook, filterStudents,
+                              getTeacherSubmission, gradeRows, homeworkGradebook,
+                              saveReview, teacherSubmissions)
+from .material_service import (createMaterial, getMaterial, openMaterial, removeMaterial,
+                               updateMaterial)
 from .homework_service import (createHomework, deleteHomework,
                                getManageableHomework, getStudentHomework,
                                getStudentHomeworkProblem,
@@ -323,3 +335,213 @@ class TeacherTeachingClassDetailView(APIView):
     def get(self, request, teachingClassId):
         teachingClass = getTeacherTeachingClass(request.user, teachingClassId)
         return Response(TeachingClassSerializer(teachingClass).data)
+
+# ==================== 教师看板、提交与评阅 ====================
+
+
+class TeacherProblemImportView(APIView):
+    permission_classes = [PermRequired]
+    permCode = 'homework:bank'
+
+    def post(self, request):
+        if not isinstance(request.data, Mapping) or set(request.data) - {'file', 'overwrite'}:
+            raise ValidationError('只允许 file、overwrite 字段')
+        uploaded = request.FILES.get('file')
+        if uploaded is None:
+            raise ValidationError('请上传 ZIP 文件（字段名 file）')
+        raw = str(request.data.get('overwrite', 'false')).lower()
+        if raw not in ('0', '1', 'false', 'true', 'off', 'on'):
+            raise ValidationError('overwrite 必须是布尔值')
+        return Response(importProblemZip(
+            request.user, uploaded, overwrite=raw in ('1', 'true', 'on'), isPublic=False))
+
+
+class TeacherProblemImportHistoryView(APIView):
+    permission_classes = [PermRequired]
+    permCode = 'homework:bank'
+
+    def get(self, request):
+        query = AsyncTask.objects.filter(
+            created_by=request.user, type=AsyncTask.TYPE_IMPORT,
+            result__scope='personal').order_by('-created_at', '-id')
+        paginator = SubmissionPagination()
+        page = paginator.paginate_queryset(query, request)
+        return paginator.get_paginated_response([{
+            'id': batch.pk, 'status': batch.status, 'createdAt': batch.created_at,
+            'finishedAt': batch.finished_at, 'result': batch.result, 'error': batch.error,
+        } for batch in page])
+
+
+class TeacherClassDashboardView(APIView):
+    permission_classes = [PermRequired]
+    permCode = 'analysis:view'
+
+    def get(self, request, teachingClassId):
+        teachingClass = getTeacherTeachingClass(request.user, teachingClassId)
+        data = classDashboard(teachingClass)
+        data.pop('students')
+        return Response(data)
+
+
+class TeacherClassStudentsView(APIView):
+    permission_classes = [PermRequired]
+    permCode = 'analysis:view'
+
+    def get(self, request, teachingClassId):
+        teachingClass = getTeacherTeachingClass(request.user, teachingClassId)
+        rows = filterStudents(classDashboard(teachingClass)['students'], request.query_params)
+        paginator = SubmissionPagination()
+        page = paginator.paginate_queryset(rows, request)
+        return paginator.get_paginated_response(page)
+
+
+class TeacherStudentDetailView(APIView):
+    permission_classes = [PermRequired]
+    permCode = 'analysis:view'
+
+    def get(self, request, teachingClassId, studentId):
+        teachingClass = getTeacherTeachingClass(request.user, teachingClassId)
+        student = next((s for s in classRoster(teachingClass) if s['id'] == studentId), None)
+        if student is None:
+            raise Http404('学生不存在')
+        homeworks = list(teachingClass.homeworks.prefetch_related('problems').order_by(
+            '-created_at', '-id'))
+        grades = gradeRows(homeworks, [student])
+        return Response({**student, 'homeworks': [grades[h.pk][0] for h in homeworks]})
+
+
+class TeacherSubmissionsView(APIView):
+    permission_classes = [PermRequired]
+    permCode = 'analysis:view'
+
+    def get(self, request, teachingClassId):
+        teachingClass = getTeacherTeachingClass(request.user, teachingClassId)
+        query = teacherSubmissions(teachingClass, request.query_params)
+        paginator = SubmissionPagination()
+        page = paginator.paginate_queryset(query, request)
+        return paginator.get_paginated_response(TeacherSubmissionSerializer(page, many=True).data)
+
+
+class TeacherSubmissionDetailView(APIView):
+    permission_classes = [PermRequired]
+    permCode = 'analysis:view'
+
+    def get(self, request, submissionId):
+        submission = getTeacherSubmission(request.user, submissionId)
+        return Response(TeacherSubmissionDetailSerializer(submission).data)
+
+
+class TeacherSubmissionReviewView(APIView):
+    permission_classes = [PermRequired]
+    permCode = 'homework:comment'
+
+    def get(self, request, submissionId):
+        submission = getTeacherSubmission(request.user, submissionId)
+        review = getattr(submission, 'teacher_review', None)
+        return Response({'review': SubmissionReviewSerializer(review).data if review else None})
+
+    def put(self, request, submissionId):
+        submission = getTeacherSubmission(request.user, submissionId)
+        review = saveReview(request.user, submission, request.data)
+        return Response({'review': SubmissionReviewSerializer(review).data})
+
+    def delete(self, request, submissionId):
+        submission = getTeacherSubmission(request.user, submissionId)
+        SubmissionReview.objects.filter(submission=submission).delete()
+        return Response(status=204)
+
+
+class TeacherHomeworkGradesView(APIView):
+    permission_classes = [PermRequired]
+    permCode = 'analysis:view'
+
+    def get(self, request, homeworkId):
+        homework = getManageableHomework(request.user, homeworkId)
+        book = homeworkGradebook(homework)
+        rows = filterStudents(book['students'], request.query_params)
+        paginator = SubmissionPagination()
+        page = paginator.paginate_queryset(rows, request)
+        response = paginator.get_paginated_response(page)
+        response.data.update(homeworkId=homework.pk, title=homework.title,
+                             summary=book['summary'], problems=book['problems'])
+        return response
+
+
+class TeacherHomeworkExportView(APIView):
+    permission_classes = [PermRequired]
+    permCode = 'analysis:view'
+
+    def get(self, request, homeworkId):
+        homework = getManageableHomework(request.user, homeworkId)
+        book = homeworkGradebook(homework)
+        book['students'] = filterStudents(book['students'], request.query_params)
+        response = HttpResponse(exportGradebook(book),
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        response['Content-Disposition'] = f'attachment; filename="homework-{homework.pk}-grades.xlsx"'
+        return response
+
+
+# ==================== 班级资料：管理与学生只读 ====================
+
+class TeacherMaterialListCreateView(APIView):
+    permission_classes = [PermRequired]
+    permCode = 'material:class_manage'
+
+    def get(self, request, teachingClassId):
+        teachingClass = getTeacherTeachingClass(request.user, teachingClassId)
+        paginator = SubmissionPagination()
+        page = paginator.paginate_queryset(teachingClass.materials.all(), request)
+        return paginator.get_paginated_response(TeachingMaterialSerializer(page, many=True).data)
+
+    def post(self, request, teachingClassId):
+        teachingClass = getTeacherTeachingClass(request.user, teachingClassId)
+        material = createMaterial(request.user, teachingClass, request.data, request.FILES.get('file'))
+        return Response(TeachingMaterialSerializer(material).data, status=201)
+
+
+class TeacherMaterialDetailView(APIView):
+    permission_classes = [PermRequired]
+    permCode = 'material:class_manage'
+
+    def get(self, request, materialId):
+        return Response(TeachingMaterialSerializer(getMaterial(request.user, materialId)).data)
+
+    def patch(self, request, materialId):
+        material = getMaterial(request.user, materialId)
+        material = updateMaterial(request.user, material, request.data, request.FILES.get('file'))
+        return Response(TeachingMaterialSerializer(material).data)
+
+    def delete(self, request, materialId):
+        removeMaterial(getMaterial(request.user, materialId))
+        return Response(status=204)
+
+
+class TeacherMaterialDownloadView(APIView):
+    permission_classes = [PermRequired]
+    permCode = 'material:class_manage'
+
+    def get(self, request, materialId):
+        material = getMaterial(request.user, materialId)
+        return FileResponse(openMaterial(material), as_attachment=True,
+                            filename=material.original_name, content_type='application/octet-stream')
+
+
+class StudentMaterialListView(APIView):
+    permission_classes = [PermRequired]
+    permCode = 'material:view'
+
+    def get(self, request, teachingClassId):
+        teachingClass = getStudentTeachingClass(request.user, teachingClassId)
+        paginator = SubmissionPagination()
+        page = paginator.paginate_queryset(teachingClass.materials.all(), request)
+        return paginator.get_paginated_response(TeachingMaterialSerializer(page, many=True).data)
+
+
+class StudentMaterialDownloadView(APIView):
+    permission_classes = [PermRequired]
+    permCode = 'material:view'
+
+    def get(self, request, materialId):
+        material = getMaterial(request.user, materialId, student=True)
+        return FileResponse(openMaterial(material), as_attachment=True,
+                            filename=material.original_name, content_type='application/octet-stream')

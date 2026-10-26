@@ -74,6 +74,11 @@ class SubmissionDetailSerializer(SubmissionListSerializer):
     code = serializers.CharField(read_only=True)
     repeatOfId = serializers.IntegerField(source='repeat_of_id', read_only=True)
     agentReport = serializers.SerializerMethodField()
+    teacherReview = serializers.SerializerMethodField()
+
+    def get_teacherReview(self, obj):
+        review = getattr(obj, 'teacher_review', None)
+        return SubmissionReviewSerializer(review).data if review else None
 
     def get_agentReport(self, obj):
         """Agent 讲题报告摘要；无报告（Agent 未启用/已通过）返回 None"""
@@ -248,3 +253,47 @@ class HomeworkStudentDetailSerializer(serializers.Serializer):
         """题目列表按题序输出，复用学生题面白名单"""
         problems = [item.getFrozenProblem() for item in obj.problems.all()]
         return ProblemStudentSerializer(problems, many=True).data
+
+
+class SubmissionReviewSerializer(serializers.Serializer):
+    comment = serializers.CharField(read_only=True)
+    reviewedById = serializers.IntegerField(source='reviewed_by_id', read_only=True,
+                                            allow_null=True)
+    reviewedByName = serializers.SerializerMethodField()
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
+
+    def get_reviewedByName(self, obj):
+        return (obj.reviewed_by.name or obj.reviewed_by.username) if obj.reviewed_by else None
+
+
+class TeacherSubmissionSerializer(SubmissionListSerializer):
+    studentId = serializers.IntegerField(source='user_id', read_only=True)
+    studentName = serializers.CharField(source='user.name', read_only=True)
+    studentUsername = serializers.CharField(source='user.username', read_only=True)
+    reviewed = serializers.SerializerMethodField()
+
+    def get_reviewed(self, obj):
+        return getattr(obj, 'teacher_review', None) is not None
+
+
+class TeacherSubmissionDetailSerializer(TeacherSubmissionSerializer):
+    code = serializers.CharField(read_only=True)
+    teacherReview = serializers.SerializerMethodField()
+
+    def get_teacherReview(self, obj):
+        review = getattr(obj, 'teacher_review', None)
+        return SubmissionReviewSerializer(review).data if review else None
+
+
+class TeachingMaterialSerializer(serializers.Serializer):
+    id = serializers.IntegerField(read_only=True)
+    teachingClassId = serializers.IntegerField(source='teaching_class_id', read_only=True)
+    title = serializers.CharField(read_only=True)
+    description = serializers.CharField(read_only=True)
+    originalName = serializers.CharField(source='original_name', read_only=True)
+    size = serializers.IntegerField(read_only=True)
+    uploadedById = serializers.IntegerField(source='uploaded_by_id', read_only=True,
+                                            allow_null=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
