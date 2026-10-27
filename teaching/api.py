@@ -47,6 +47,7 @@ from .serializers import (HomeworkDetailSerializer,
                           SubmissionListSerializer,
                           TeacherTeachingClassSerializer)
 from .submission_service import parseObjectId, submitSolution
+from .submission_titles import withFrozenTitles
 
 
 class SubmissionPagination(PageNumberPagination):
@@ -72,8 +73,8 @@ class SubmissionListCreateView(APIView):
         return Response({'submissionId': submissionId})
 
     def get(self, request):
-        queryset = Submission.objects.select_related(
-            'problem', 'judge_task')
+        queryset = withFrozenTitles(Submission.objects.select_related(
+            'problem', 'judge_task'))
         if not request.user.is_superuser:
             queryset = queryset.filter(user=request.user)
         # 可选过滤：按题/作业/状态（12.2「按题/作业过滤分页」）
@@ -105,8 +106,8 @@ class SubmissionDetailView(APIView):
     permCode = 'homework:view'
 
     def get(self, request, submissionId):
-        submission = Submission.objects.select_related(
-            'problem', 'judge_task', 'agent_report').filter(
+        submission = withFrozenTitles(Submission.objects.select_related(
+            'problem', 'judge_task', 'agent_report')).filter(
             pk=submissionId).first()
         if submission is None or not (
                 request.user.is_superuser
@@ -284,6 +285,9 @@ class StudentHomeworkListView(APIView):
 
     def get(self, request):
         homeworks = listStudentHomeworks(request.user)
+        homeworks = list(homeworks)
+        from .student_service import applyArchivedOwnScores
+        applyArchivedOwnScores(homeworks, request.user)
         return Response(HomeworkStudentListSerializer(homeworks, many=True).data)
 
 

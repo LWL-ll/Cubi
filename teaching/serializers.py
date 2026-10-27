@@ -54,6 +54,8 @@ class SubmissionListSerializer(serializers.Serializer):
     progress = serializers.SerializerMethodField()
 
     def get_problemTitle(self, obj):
+        if hasattr(obj, 'frozenProblemTitle') and obj.frozenProblemTitle is not None:
+            return obj.frozenProblemTitle
         return obj.problem.title if obj.problem else None
 
     def get_progress(self, obj):
@@ -228,7 +230,7 @@ class HomeworkStudentListSerializer(serializers.Serializer):
         creator = getattr(obj, 'created_by', None)
         if creator is None:
             return '（教师已删除）'
-        return creator.get_full_name() or creator.username
+        return creator.name or creator.get_full_name() or creator.username
 
 
 class HomeworkStudentDetailSerializer(serializers.Serializer):

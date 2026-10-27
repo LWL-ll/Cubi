@@ -25,12 +25,10 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import ValidationError
 
-from academics.models import TeachingClass
 from academics.term_service import requireTeachingWrite
 from teaching.models import (Homework, HomeworkProblem, Problem, Submission,
                              buildProblemSnapshot)
 from teaching.helpers import getStudentTeachingClass
-from users.models import SchoolIdentity
 
 logger = logging.getLogger('codemind.homework')
 
@@ -215,15 +213,8 @@ def getStudentHomeworkQuery(user):
     """
     if user.is_superuser:
         return Homework.objects.all()
-    identity = user.identities.filter(
-        identity_type=SchoolIdentity.IDENTITY_STUDENT).first()
-    if identity is None or not hasattr(identity, 'student_profile'):
-        return Homework.objects.none()
-    teachingClassIds = TeachingClass.objects.filter(
-        admin_classes__memberships__student_profile=identity.student_profile,
-        admin_classes__memberships__left_at__isnull=True) \
-        .values_list('id', flat=True).distinct()
-    return Homework.objects.filter(teaching_class_id__in=teachingClassIds)
+    from .student_scope import StudentScope
+    return StudentScope(user).homeworks(contentOnly=True)
 
 
 def annotateStudentStats(homeworkQuery, user):
@@ -252,8 +243,8 @@ def getStudentHomework(user, homeworkId):
 def listStudentHomeworks(user):
     """我的作业列表：状态由前端按 startAt/deadline 派生（后端给原始时间）"""
     return annotateStudentStats(getStudentHomeworkQuery(user), user) \
-        .select_related('teaching_class') \
-        .order_by('-created_at')
+        .select_related('teaching_class', 'created_by') \
+        .order_by('-created_at', '-pk')
 
 
 def getStudentHomeworkProblem(user, homeworkId, problemId):

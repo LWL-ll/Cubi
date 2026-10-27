@@ -110,9 +110,17 @@ class StudentReminderListView(APIView):
     permCode = 'notice:view'
 
     def get(self, request):
+        from .student_service import booleanFilter, queryFields
+        queryFields(request.query_params, {'page', 'unread'})
+        reminders = listStudentReminders(request.user)
+        unread = reminders.filter(read_at__isnull=True).count()
+        if 'unread' in request.query_params:
+            reminders = reminders.filter(read_at__isnull=booleanFilter(request.query_params['unread']))
         paginator = SubmissionPagination()
-        page = paginator.paginate_queryset(listStudentReminders(request.user), request)
-        return paginator.get_paginated_response(HomeworkReminderSerializer(page, many=True).data)
+        page = paginator.paginate_queryset(reminders, request)
+        response = paginator.get_paginated_response(HomeworkReminderSerializer(page, many=True).data)
+        response.data['unreadCount'] = unread
+        return response
 
 
 class StudentReminderReadView(APIView):

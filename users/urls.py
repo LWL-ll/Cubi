@@ -15,6 +15,7 @@ urlpatterns = [
     # 登录后首页（权限总览，各角色功能入口占位）
     path('home/', views.renderHomePage, name='home'),
     # ---- 前后端分离 API ----
+    path('api/auth/csrf/', api.apiCsrf, name='api_csrf'),
     path('api/auth/login/', api.apiLogin, name='api_login'),
     path('api/auth/logout/', api.apiLogout, name='api_logout'),
     path('api/auth/me/', api.apiMe, name='api_me'),

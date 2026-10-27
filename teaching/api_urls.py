@@ -2,6 +2,7 @@
 from django.urls import path
 from . import api
 from . import communication_api as communication
+from .shared_material_api import TeacherPublishCourseMaterialView
 
 from .api import (PublicProblemCreateView, TeacherHomeworkDetailView,
                   TeacherHomeworkListCreateView, TeacherProblemDetailView,
@@ -9,6 +10,7 @@ from .api import (PublicProblemCreateView, TeacherHomeworkDetailView,
                   TeacherTeachingClassListView)
 
 urlpatterns = [
+    path('teaching-classes/<int:teachingClassId>/materials/from-course/', TeacherPublishCourseMaterialView.as_view()),
     path('teaching-classes/<int:teachingClassId>/notices/', communication.TeacherNoticeListCreateView.as_view()),
     path('notices/<int:noticeId>/', communication.TeacherNoticeDetailView.as_view()),
     path('notices/<int:noticeId>/readers/', communication.TeacherNoticeReadersView.as_view()),

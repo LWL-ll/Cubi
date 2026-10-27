@@ -13,6 +13,7 @@ from django.shortcuts import redirect
 # 白名单路径前缀：改密闭环所需的最小集合（登录/登出/查自身信息/改密页/
 # 改密 API/静态资源）。后台也必须先完成统一改密流程。
 WHITELIST_PREFIXES = [
+    '/api/auth/csrf/',
     '/api/auth/login/',
     '/api/auth/logout/',
     '/api/auth/me/',

@@ -19,7 +19,7 @@ logger = logging.getLogger('codemind.material')
 MAX_FILE_BYTES = 50 * 1024 * 1024
 ALLOWED_SUFFIXES = {
     '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-    '.txt', '.md', '.csv', '.zip', '.c', '.py'}
+    '.txt', '.md', '.csv', '.json', '.zip', '.c', '.py'}
 
 
 def materialStorage():

@@ -197,13 +197,15 @@ def teacherSubmissions(teachingClass, params):
         if params['reviewed'] not in ('true', 'false'):
             raise ValidationError({'reviewed': 'reviewed 必须是 true/false'})
         query = query.filter(teacher_review__isnull=params['reviewed'] == 'false')
-    return query.order_by('-created_at', '-id')
+    from .submission_titles import withFrozenTitles
+    return withFrozenTitles(query).order_by('-created_at', '-id')
 
 
 def getTeacherSubmission(user, submissionId):
-    submission = Submission.objects.select_related(
+    from .submission_titles import withFrozenTitles
+    submission = withFrozenTitles(Submission.objects.select_related(
         'homework__teaching_class', 'user', 'problem', 'judge_task', 'teacher_review__reviewed_by'
-    ).filter(pk=submissionId, submit_type=Submission.SUBMIT_HOMEWORK,
+    )).filter(pk=submissionId, submit_type=Submission.SUBMIT_HOMEWORK,
              homework__isnull=False).first()
     if submission is None:
         raise Http404('提交不存在')

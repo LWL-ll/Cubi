@@ -1,7 +1,7 @@
 # CodeMind 教辅平台 · API 设计文档
 
 > 更新时间：2026-10-27
-> 状态：教务、教师及课程组必要业务后端已补齐；本地业务库已于 2026-10-27 备份后应用本轮迁移并校验，生产环境独立验收。新增接口完整契约见 [非学生端后端接口](非学生端后端接口.md)。
+> 状态：教务、教师、课程组及学生端后端清单已落实。非学生端迁移已在本地业务库备份后验收；学生端无新增迁移，生产环境独立验收。新增契约见 [非学生端后端接口](非学生端后端接口.md)、[学生端接口](学生端接口.md)。
 > 配套文档：《用户权限设计.md》（权限码与校验机制）、《数据库表重构设计.md》（V2 表结构与迁移）、《教学班级设计.md》（教学班模型决策）
 
 ## 一、总则
@@ -47,9 +47,11 @@
 
 ## 二、认证接口
 
+纯 API 客户端先 GET `/api/auth/csrf/`，读取响应 `{"csrfToken":"..."}` 并保存 Cookie。CSRF Cookie 为 HttpOnly；写请求携带 Cookie 和 `X-CSRFToken`，不依赖模板或脚本读取 Cookie。该接口允许匿名及待改密账号，响应禁止缓存。
+
 ### 2.1 登录 `POST /api/auth/login/`
 
-公开接口（AllowAny），登录失败由 django-axes 记录，连续失败 5 次锁定 1 小时。
+公开接口（AllowAny），匿名登录同样校验 CSRF。登录失败由 django-axes 记录，连续失败 5 次锁定 1 小时。
 
 **请求体**
 ```json
@@ -58,11 +60,13 @@
 
 **响应 200**
 ```json
-{"username": "T1002", "name": "李老师", "groupKey": "teacher", "groupName": "教师"}
+{"username": "T1002", "name": "李老师", "groupKey": "teacher", "groupName": "教师", "mustChangePassword": false, "csrfToken": "登录后轮换的 token"}
 ```
 `groupKey`：`admin` / `course_team` / `teacher` / `student` / `superuser`
 
 **错误**：400 账号或密码错误 / 请输入账号和密码
+
+请求体只接受 username/password 字符串；username 最长 150 字，密码最长 1024 字，不接受空值、NUL、无效 Unicode 或额外字段。仅 username 去除首尾空白，密码空格保留。登录后 CSRF 已轮换，后续写请求使用响应 token 或重新 GET csrf 接口；缺 token 或跨源伪造返回 403。
 
 ### 2.2 登出 `POST /api/auth/logout/`
 
@@ -91,10 +95,12 @@
 - 新密码走 Django 全套强度校验（长度 ≥8、非纯数字、非常见密码、不与用户信息相似），失败 400 + 校验消息
 - 成功后自动解除 `must_change_password` 标记，并保持当前会话（不踢下线）
 - 响应 200：`{"message": "密码修改成功"}`；失败 400：`{"error": "旧密码不正确"}`
+- oldPassword/newPassword 均须为 1～1024 字字符串；结构、字符及额外字段校验与登录一致，不输出密码。
 
 未改密账号的强制拦截（users/middleware.py 全局兜底，不依赖前端跳转）：
-`must_change_password=True` 时，除本接口与登录/登出/`me`/admin 外的所有
+`must_change_password=True` 时，除本接口与 CSRF 引导、登录/登出/`me` 外的所有
 API 返回 403、所有页面重定向到 `/change-password/`。
+后台同样须先改密；`/login/`、`/logout/`、改密页及静态资源保留闭环访问。
 
 ### 2.5 找回密码
 
@@ -436,6 +442,8 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 | `/api/submissions/` | POST/GET | homework:view | 受理提交 / 我的提交列表（分页 20，可按题/作业/状态过滤） |
 | `/api/submissions/<id>/` | GET | homework:view | 提交详情 + 判题进度（仅本人或超管，否则 404） |
 
+上述作业列表仍返回原数组。新分页筛选、本人上下文与课程、历史成绩反馈、消息资料聚合、首页和画像使用 `/api/student/`，详见 [学生端接口](学生端接口.md)。题面、答案、通知和资料仍须当前在读在班，关闭/归档班另核验冻结名单；本人历史摘要不恢复内容访问。
+
 ---
 
 ## 五、题库导入与教师后端接口
@@ -505,14 +513,16 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 | `GET/POST /api/teacher/teaching-classes/<id>/materials/` | material:class_manage | 列表分页 20、上传（成功 201） |
 | `GET/PATCH/DELETE /api/teacher/materials/<id>/` | material:class_manage | 元数据读取、修改或替换文件、删除 |
 | `GET /api/teacher/materials/<id>/download/` | material:class_manage | 任教教师附件下载 |
+| `POST /api/teacher/teaching-classes/<id>/materials/from-course/` | material:class_manage | 从共享资料或章节选材，核验目标班范围后复制为独立班级资料，成功 201 |
 | `GET /api/teaching-classes/<id>/materials/` | material:view | 当前班级学生只读列表，分页 20 |
 | `GET /api/materials/<id>/download/` | material:view | 当前班级学生附件下载 |
 
 - 上传须 multipart，title 必填（≤100 字）、description 可选（≤2000 字）、file 必填；PATCH 只接受这三个字段，替换文件时使用 multipart。
-- 单文件非空且 ≤50MB；允许扩展名 pdf/doc/docx/xls/xlsx/ppt/pptx/txt/md/csv/zip/c/py，不展开压缩包。文件均以二进制附件下载。
+- 单文件非空且 ≤50MiB；允许扩展名 pdf/doc/docx/xls/xlsx/ppt/pptx/txt/md/csv/json/zip/c/py，不展开压缩包。文件均以二进制附件下载。
 - 50MB 为应用层限制，部署时反向代理上传上限须覆盖文件和 multipart 开销，私有目录须允许应用账号读写。
 - 存储在 PRIVATE_MATERIAL_ROOT（默认项目 private_uploads），使用随机文件名；该目录不可配置为公开静态目录。API 只返回原文件名、大小、标题、说明、上传人和时间，不返回物理路径、存储标识或公开 URL。
 - 下载前检查班级访问权限，离班立即失去下载权限；教师也只能管理任教班级资料。
+- 学期关闭/归档后学生还须属于冻结名单；教师选材下发仅在开放学期，源资料范围须包含目标任课班，下发副本不随源库变动。字段与章节条件见 [学生端接口](学生端接口.md#4-教师选材下发)。
 - 替换/删除在数据库提交后清理旧文件，保存失败清理新文件；旧文件清理发生磁盘故障时记录随机标识供运维处理，已删除资料不能继续经 API 下载。
 
 ### 5.6 个人资料
@@ -535,9 +545,9 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 
 - POST 创建只接受 `title`（必填，1～100 字）、`content`（必填，1～10000 字）；PATCH 仅接受这两个字段的非空子集，正文按普通文本保存。不接受班级、作者或接收人覆盖字段。
 - 通知返回 `id/teachingClassId/title/content/createdById/updatedById/createdAt/updatedAt`，学生响应另含 `myReadAt`（未读为 null）。GET 不自动标记已读，标记接口请求体为空对象 `{}`，重复请求保留首次时间。
-- readers 返回分页 `count/next/previous/results`，另含 `noticeId/summary`；summary 为 `studentCount/readCount/unreadCount`，始终按当前全班计算。results 含当前学生简要身份及 `readAt`，离班历史阅读记录保留但不计入统计。
+- readers 返回分页 `count/next/previous/results`，另含 `noticeId/summary`；summary 为 `studentCount/readCount/unreadCount`，开放学期按当前名单，关闭后按冻结名单。results 含相应学生简要身份及 `readAt`；离班阅读记录保留，是否计入取决于所用名单。
 - 同班教师可共同维护；通知编辑不清空阅读记录，因此已读仅表示曾读过通知，不保证读过最新版本。删除通知同时删除其阅读记录。
-- 教师须任教、学生须当前在班；跨班和不存在的通知返回相同 404。所有作者、修改人和阅读人取当前会话。
+- 教师须任教，学生须当前在读在班且通过结课冻结名单；跨班和不存在的通知返回相同 404。所有作者、修改人和阅读人取当前会话。
 
 ### 5.8 作业站内提醒
 
@@ -596,14 +606,15 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 - **功能级**：分组权限码（Group → Permission → permCode），回答"能不能用这个功能" → 无权限 **403**
 - **对象级**：业务接口内校验，回答"能不能对这个对象用" → 无权访问 **404**（防探测）
   - 教师：`teachingClass.teachers` 含当前用户（1 跳）
-  - 学生：身份 → 资料 → 当前成员关系 → 行政班 → 教学班（3 跳推导）
+  - 学生内容：首个学生身份 → 在读资料 → 当前成员关系 → 行政班 → 教学班；结课后再与冻结名单相交
+  - 学生历史摘要：仅本人已提交作业、冻结本人名单内作业或当前内容范围，归档读取冻结本人行
 
 ### 6.3 后续规划（随功能轮次补充）
 
 - 教师通知 CRUD、阅读统计、站内作业提醒、参考答案、班级成绩看板、私有资料和提交批语已实现后端，前端待接入；AI 扩展（homework:ai）仍待后续。
 - 课程组知识/文档、章节与共享资料管理、教师只读 API 已实现，见新增接口文档。
-- 学生画像 API（analysis:view_self）待开发；个人资料 API（profile:edit）已实现。
-- 所有教师业务 API 必须套 `getTeacherTeachingClass`、学生业务 API 套 `getStudentTeachingClass` 对象级校验
+- 学生画像（analysis:view_self）、首页、本人课程与作业聚合、成绩反馈已实现；个人资料 API（profile:edit）保留。教师选材下发生成独立班级副本，详见 [学生端接口](学生端接口.md)。
+- 教师业务复用 `getTeacherTeachingClass`，学生内容复用 `getStudentTeachingClass`，本人摘要使用 `StudentScope` 单独限定；历史提交继续按本人过滤。
 
 > 已落地（2026-10-20）：题库 API（公共题库 + 个人题库、筛选/分页）、作业组卷/学生作业/提交 API、管理员 ZIP 批量导入 API。
 
@@ -615,6 +626,7 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 - 异步任务与判题运维：`manage.py test tasks`（27 用例）
 - 上述分模块数量为 2026-10-20 历史基线，当时全量 260 项通过；不代表当前测试规模。
 - 2026-10-27 非学生端补齐阶段：全量 **667 项测试通过**，系统检查、迁移漂移检查通过；新增 138 项回归，覆盖基础/账号学籍、学期冻结、后台导入、课程组权限、原生后台审计、旧库升级及独立 SQLite 双连接并发。之后经单独授权完成本地业务库迁移，验收见 3.10。
+- 2026-10-27 学生端清单及教师选材阶段：新增 **44 项**回归（会话 5、学生聚合 26、选材下发 13），全量 **711 项测试通过**；系统检查和迁移漂移检查通过，无新增模型、迁移、依赖或业务库写入。覆盖本人历史、冻结名单、归档成绩、撤权、查询效率、独立文件副本及失败清理。
 - 2026-10-26 历史全量基线为 529 项，详见 3.8；教师通知/提醒/参考答案阶段的 455 项基线见 5.10。
 - 权限一致性检查：`manage.py check`（定义四处与数据库自动比对）
 

@@ -1,7 +1,11 @@
 """用户认证相关 API：登录 / 登出 / 当前用户与权限 / 修改密码（前后端分离用）"""
+from collections.abc import Mapping
 from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
+from django.middleware.csrf import get_token
+from django.views.decorators.cache import never_cache
+from django.views.decorators.debug import sensitive_post_parameters
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
@@ -10,6 +14,34 @@ from rest_framework.views import APIView
 
 from .permissions import GROUP_NAMES, PERM_CODES, PermRequired, getGroupKey
 from .profile_service import profileData, updateProfile
+
+
+def authFields(payload, names):
+    if not isinstance(payload, Mapping) or set(payload) - set(names):
+        raise ValueError('请求体必须是对象，且只能包含允许的字段')
+    values = []
+    for name in names:
+        value = payload.get(name)
+        limit = 150 if name == 'username' else 1024
+        if not isinstance(value, str) or not value or len(value) > limit or '\x00' in value:
+            raise ValueError(f'{name} 须为 1～{limit} 字文本')
+        try:
+            value.encode('utf-8')
+        except UnicodeEncodeError:
+            raise ValueError(f'{name} 含无效字符') from None
+        if name == 'username':
+            value = value.strip()
+            if not value:
+                raise ValueError('username 不能为空')
+        values.append(value)
+    return values
+
+
+@never_cache
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def apiCsrf(request):
+    return Response({'csrfToken': get_token(request)})
 
 
 class ProfileView(APIView):
@@ -23,6 +55,7 @@ class ProfileView(APIView):
         return Response(updateProfile(request.user, request.data))
 
 
+@sensitive_post_parameters('password')
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def apiLogin(request):
@@ -34,10 +67,10 @@ def apiLogin(request):
     """
     # 会话认证默认只对已登录用户校验 CSRF；登录入口还必须保护匿名请求。
     SessionAuthentication().enforce_csrf(request)
-    username = request.data.get('username', '').strip()
-    password = request.data.get('password', '')
-    if not username or not password:
-        return Response({'error': '请输入账号和密码'}, status=400)
+    try:
+        username, password = authFields(request.data, ('username', 'password'))
+    except ValueError as exc:
+        return Response({'error': str(exc)}, status=400)
     user = authenticate(request, username=username, password=password)
     if user is None:
         return Response({'error': '账号或密码错误'}, status=400)
@@ -49,6 +82,7 @@ def apiLogin(request):
         'groupKey': groupKey,
         'groupName': GROUP_NAMES.get(groupKey, '超级用户'),
         'mustChangePassword': user.must_change_password,
+        'csrfToken': get_token(request),
     })
 
 
@@ -108,6 +142,7 @@ def changeUserPassword(request, user, oldPassword, newPassword):
     return True, ''
 
 
+@sensitive_post_parameters('oldPassword', 'newPassword')
 @api_view(['POST'])
 def apiChangePassword(request):
     """修改密码接口：POST {oldPassword, newPassword}
@@ -115,10 +150,10 @@ def apiChangePassword(request):
     首次登录强制改密的闭环：成功后 must_change_password 置 False，
     ForcePasswordChangeMiddleware 随之放行；会话保持不断。
     """
-    oldPassword = request.data.get('oldPassword', '')
-    newPassword = request.data.get('newPassword', '')
-    if not oldPassword or not newPassword:
-        return Response({'error': '旧密码和新密码均不能为空'}, status=400)
+    try:
+        oldPassword, newPassword = authFields(request.data, ('oldPassword', 'newPassword'))
+    except ValueError as exc:
+        return Response({'error': str(exc)}, status=400)
     ok, errMsg = changeUserPassword(
         request, request.user, oldPassword, newPassword)
     if not ok:

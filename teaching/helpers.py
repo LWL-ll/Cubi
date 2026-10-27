@@ -16,8 +16,7 @@ from functools import wraps
 from django.http import Http404, HttpResponseForbidden
 from django.shortcuts import redirect
 
-from academics.models import ClassMembership, TeachingClass
-from users.models import SchoolIdentity
+from academics.models import TeachingClass
 
 # 教师/学生分组中文名（与 users/permissions.py 的 GROUP_NAMES 保持一致）
 TEACHER_GROUP_NAME = '教师'
@@ -50,19 +49,8 @@ def getStudentTeachingClass(user, teachingClassId):
         raise Http404('教学班不存在')
     if user.is_superuser:
         return teachingClass
-    # 第 1 跳：学生身份（identity_type=student）
-    studentIdentity = user.identities.filter(
-        identity_type=SchoolIdentity.IDENTITY_STUDENT).first()
-    if studentIdentity is None or not hasattr(studentIdentity, 'student_profile'):
-        raise Http404('教学班不存在')
-    # 第 2~3 跳：当前成员关系 → 行政班 → 教学班
-    inTeachingClass = ClassMembership.objects.filter(
-        student_profile=studentIdentity.student_profile,
-        left_at__isnull=True,
-        admin_class__teaching_classes=teachingClass).exists()
-    if not inTeachingClass:
-        raise Http404('教学班不存在')
-    return teachingClass
+    from .student_scope import StudentScope
+    return StudentScope(user).requireContent(teachingClassId)
 
 
 def requireTeacherGroup(viewFunc):
