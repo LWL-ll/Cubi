@@ -1,6 +1,6 @@
 """创建判题租约回收定时任务（django-q2 Schedule 表）
 
-落地方式说明（docs/OJ对接设计.md 8.1 租约回收）：
+落地方式说明（docs/design/OJ对接设计.md 8.1 租约回收）：
 django-q2 的定时任务以 DB 记录承载——Q_CLUSTER 配置里的 schedule 键
 在 v2 已移除，运行时由 qcluster long 集群的调度器每分钟扫描 next_run
 到期的 Schedule 记录并投递（生产只跑 long 集群，排程的 cluster 字段

@@ -56,7 +56,7 @@ INSTALLED_APPS = [
     'course_team',
     # 教师工作台：班级通知、学情分析、班级资料、作业、批改、个人题库
     'teaching',
-    # 异步任务统一记录（AsyncTask 表，见 docs/异步任务设计.md）
+    # 异步任务统一记录（AsyncTask 表，见 docs/design/异步任务设计.md）
     'tasks',
     # REST API 框架（前后端分离）
     'rest_framework',
@@ -204,7 +204,7 @@ SESSION_COOKIE_SAMESITE = 'Lax'    # 防跨站请求伪造
 SESSION_COOKIE_AGE = 2 * 60 * 60   # 会话 2 小时过期
 
 # ==================== OJ 判题沙箱（go-judge）对接配置 ====================
-# 对接细节与判题流程见 docs/OJ对接设计.md
+# 对接细节与判题流程见 docs/design/OJ对接设计.md
 # 认证方式为 Authorization: Bearer <OJ_AUTH_TOKEN>，实测于 2026-10-18
 OJ_BASE_URL = os.environ.get('OJ_BASE_URL', 'https://oj.liuwenli.cn')
 # 判题接口凭证：只从环境变量读取，严禁硬编码进仓库（防止密钥泄露）
@@ -223,7 +223,7 @@ AGENT_MAX_ITERATIONS = 5       # Agent 自调试最大迭代次数（接入后�
 # ==================== 异步任务队列（django-q2）====================
 # worker 独立进程运行：python manage.py qcluster
 # broker 用 Django ORM（django_q_ormq 表），无需 Redis 等中间件
-# 设计依据：docs/异步任务设计.md 第五章；判题集群参数：docs/OJ对接设计.md
+# 设计依据：docs/design/异步任务设计.md 第五章；判题集群参数：docs/design/OJ对接设计.md
 Q_CLUSTER = {
     'name': 'codemind',        # 集群名（多环境部署区分用）
     'workers': 2,              # worker 进程数：开发 1，生产 2~4（按 CPU 核数）

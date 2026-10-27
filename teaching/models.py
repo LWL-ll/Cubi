@@ -1,9 +1,9 @@
 """教学业务数据模型
 
-V2 教学班级结构（docs/教学班级设计.md）：教师/作业/通知/资料挂教学班，
+V2 教学班级结构（docs/design/教学班级设计.md）：教师/作业/通知/资料挂教学班，
 学生经「行政班 → 教学班」推导归属。
 
-OJ 判题五张表（docs/OJ对接设计.md 第九章）：
+OJ 判题五张表（docs/design/OJ对接设计.md 第九章）：
 - Problem 题目（题面 + 测试点 JSON + 可选 spj，两级题库）
 - Homework 作业（教学班 × 题目集合 + 起止时间）
 - HomeworkProblem 作业-题目中间表（题序 + 选题时修订号）
@@ -34,7 +34,7 @@ def buildProblemSnapshot(problem):
 class Problem(models.Model):
     """题目：题面 markdown + 测试用例 JSON + 可选 spj
 
-    题库归属（docs/OJ对接设计.md 12.1，2026-10-20 调整）：
+    题库归属（docs/design/OJ对接设计.md 12.1，2026-10-20 调整）：
     - is_public=True：公共题库（系统管理员导入/维护，全平台教师只读选题）
     - is_public=False：教师个人题库（homework:bank 管理，owner 为教师本人）
     """
@@ -287,7 +287,7 @@ class Submission(models.Model):
 class JudgeTask(models.Model):
     """判题执行表（独立于通用 AsyncTask：租约字段为判题独有）
 
-    租约状态机（docs/OJ对接设计.md 第八章）：
+    租约状态机（docs/design/OJ对接设计.md 第八章）：
     Q2 long 集群管「至少一次投递」，本表租约管「至多一次生效」——
     并发 worker 领取靠原子条件 UPDATE（attempt_id + heartbeat）。
     前端轮询的唯一来源是 Submission 详情接口（progress 从本表读）。

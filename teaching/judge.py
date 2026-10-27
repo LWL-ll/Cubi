@@ -1,13 +1,13 @@
 """go-judge 判题沙箱客户端：HTTP 封装 + 状态集中映射
 
-对接 go-judge v1.13.3 新版 API（docs/OJ对接设计.md 第三/四章，2026-10-18 实测）：
+对接 go-judge v1.13.3 新版 API（docs/design/OJ对接设计.md 第三/四章，2026-10-18 实测）：
 - submitRun：POST /run 判题，请求体为 Request 对象 {"cmd": [...]}（4.1），
   一次请求同步跑完，返回 Result 数组（4.2）
 - uploadFile：POST /file 上传文件（multipart，字段名 file），
   响应为纯 JSON 字符串 fileId（实测形态，如 "ZSGDNRTD"）
 - deleteFile：DELETE /file/<fileId> 删除文件（释放沙箱磁盘）
 
-重试策略（docs/OJ对接设计.md 第十五章）：
+重试策略（docs/design/OJ对接设计.md 第十五章）：
 - 网络错误/超时/5xx → 透明重试 1 次，仍失败抛 NetworkError
 - 401 → AuthError 不重试（token 失效，重试无意义，提示运维轮换）
 - 400/其他 4xx → BadRequestError 不重试（请求构造错误，重试同样错）
@@ -15,7 +15,7 @@
 - File Error → 不重试（保守默认：go-judge fileError 细分类型尚无实测数据，
   一律按确定性错误处理；实测到瞬时类型（磁盘/系统繁忙）再放开重试）
 
-安全（docs/OJ对接设计.md 第十四章）：
+安全（docs/design/OJ对接设计.md 第十四章）：
 - 凭证只从 settings.OJ_AUTH_TOKEN（环境变量）读取，严禁硬编码
 - 响应结构校验：status 必须属于 9 种原始字面量，
   防沙箱异常响应污染业务数据（安全设计第 4 条）

@@ -1,6 +1,6 @@
 """教务业务序列化器（前后端分离 API 用）
 
-V2 表结构（docs/数据库表重构设计.md）：
+V2 表结构（docs/design/数据库表重构设计.md）：
 学生经 成员关系 → 行政班 → 教学班 推导，教师任课挂教学班。
 """
 from rest_framework import serializers

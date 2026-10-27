@@ -1,6 +1,6 @@
 # 手写迁移：V1 → V2 数据回填（无损）。
 # 结构重命名见 0005，旧字段清理与字段收紧见 0007。
-# 详见 docs/数据库表重构设计.md 第七节数据迁移方案。
+# 详见 docs/design/数据库表重构设计.md 第七节数据迁移方案。
 import django.db.models.deletion
 from django.conf import settings
 from django.db import migrations, models

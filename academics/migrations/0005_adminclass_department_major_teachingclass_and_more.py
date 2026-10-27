@@ -3,7 +3,7 @@
 # 但自动检测器会误判为「删除旧表 + 新建表」，直接应用会丢失数据，
 # 所以手写本迁移用 RenameModel/RenameField 保留数据。
 # 数据回填见 0006，旧字段清理与字段收紧见 0007。
-# 详见 docs/数据库表重构设计.md 第七节数据迁移方案。
+# 详见 docs/design/数据库表重构设计.md 第七节数据迁移方案。
 import django.db.models.deletion
 from django.db import migrations, models
 

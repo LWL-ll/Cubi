@@ -6,7 +6,7 @@ class Department(models.Model):
     """学院：学生导入时按学号格式解析自动生成（get_or_create），无单独导入入口
 
     V2：原 College 升级——加业务编码 code 与启用开关（学校改名时关系稳定），
-    详见 docs/数据库表重构设计.md
+    详见 docs/design/数据库表重构设计.md
     """
     code = models.CharField('学院编码', max_length=32, unique=True)
     name = models.CharField('学院名称', max_length=100)
@@ -167,7 +167,7 @@ class CourseCollege(models.Model):
 class TeachingClass(models.Model):
     """教学班（授课单位）：由 1~N 个行政班按学期组成（行政班是原子单位，不拆分）
 
-    设计详见 docs/教学班级设计.md：学生不直接挂教学班，
+    设计详见 docs/design/教学班级设计.md：学生不直接挂教学班，
     归属由「学生 → 成员关系 → 行政班 → 教学班」推导，
     对象级校验：教师查 teachers、学生经行政班三跳推导
     """

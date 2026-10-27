@@ -31,7 +31,7 @@ class TeacherTeachingClassSerializer(serializers.ModelSerializer):
 
 
 class SubmissionListSerializer(serializers.Serializer):
-    """学生提交列表项：字段白名单（docs/OJ对接设计.md 12.2）
+    """学生提交列表项：字段白名单（docs/design/OJ对接设计.md 12.2）
 
     白名单原则：只含提交人本人可见字段，绝不含测试点数据、预期输出、
     spj 输出、他人提交信息。字段全显式声明（不用 ModelSerializer），
@@ -70,7 +70,7 @@ class SubmissionDetailSerializer(SubmissionListSerializer):
     code 仅本人可见（对象级 404 已保证）；教师看学生代码走
     教学班聚合接口（analysis:view），不走本接口。
     agentReport 只含学生可见字段：correctedCode 是 Agent 自测代码，
-    绝不下发（docs/OJ系统介绍.md 保密链）。
+    绝不下发（docs/guides/OJ系统介绍.md 保密链）。
     """
     code = serializers.CharField(read_only=True)
     repeatOfId = serializers.IntegerField(source='repeat_of_id', read_only=True)

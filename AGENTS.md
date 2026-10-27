@@ -42,6 +42,7 @@
 
 - 应用：`users`、`academics`、`teaching`、`course_team`、`tasks`。
 - 启动和验证：[README.md](README.md)；依赖：[requirements.txt](requirements.txt)。
-- 接口：[docs/API设计文档.md](docs/API设计文档.md)、[docs/非学生端后端接口.md](docs/非学生端后端接口.md)、[docs/学生端接口.md](docs/学生端接口.md)。
-- 业务与权限：[docs/架构设计.md](docs/架构设计.md)、[docs/用户权限设计.md](docs/用户权限设计.md)、[docs/教学班级设计.md](docs/教学班级设计.md)。
+- 文档分类与阅读入口：[docs/README.md](docs/README.md)；新增文档放入对应用途目录，并同步导航及引用。
+- 接口：[docs/api/API设计文档.md](docs/api/API设计文档.md)、[docs/api/非学生端后端接口.md](docs/api/非学生端后端接口.md)、[docs/api/学生端接口.md](docs/api/学生端接口.md)。
+- 业务与权限：[docs/design/架构设计.md](docs/design/架构设计.md)、[docs/design/用户权限设计.md](docs/design/用户权限设计.md)、[docs/design/教学班级设计.md](docs/design/教学班级设计.md)。
 - 异步导入使用默认 `codemind` 集群，判题使用 `long` 集群；部署必须分别运行。

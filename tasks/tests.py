@@ -1,6 +1,6 @@
 """AsyncTask 模型测试：状态默认值、索引存在、str 输出
 
-模型是「提交→轮询」模式的地基（docs/异步任务设计.md 第四章），
+模型是「提交→轮询」模式的地基（docs/design/异步任务设计.md 第四章），
 字段语义与索引约定必须以测试固化，防止后续改动破坏前端轮询协议。
 """
 from django.test import TestCase

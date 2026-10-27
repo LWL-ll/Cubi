@@ -1,4 +1,4 @@
-"""判题任务主控：long 集群消费（docs/OJ对接设计.md 第八章租约状态机）
+"""判题任务主控：long 集群消费（docs/design/OJ对接设计.md 第八章租约状态机）
 
 执行顺序（8.2）：租约领取 → 资格检查 → 重复检测 → 编译 →
 全测试点判题（聚合部分分）→ 结果落库。
@@ -28,7 +28,7 @@ from teaching.models import JudgeTask, Problem, Submission
 
 logger = logging.getLogger('codemind.judge_task')
 
-# ---------- 判题参数（docs/OJ对接设计.md 第十三章资源档）----------
+# ---------- 判题参数（docs/design/OJ对接设计.md 第十三章资源档）----------
 
 # 资源档：cpu/clock 单位纳秒，memory/copyOutMax 单位字节
 # 每次请求显式携带全部 limit 字段，不依赖沙箱默认值（13 章固定项）

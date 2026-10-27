@@ -1,6 +1,6 @@
 # 手写迁移：V2 收尾——0006 已把数据回填完毕，
 # 这里删除旧字段、把临时可空的字段收紧为最终态。
-# 详见 docs/数据库表重构设计.md 第七节数据迁移方案。
+# 详见 docs/design/数据库表重构设计.md 第七节数据迁移方案。
 import django.db.models.deletion
 from django.db import migrations, models
 

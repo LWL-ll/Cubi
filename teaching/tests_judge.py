@@ -1,7 +1,7 @@
 """判题客户端测试：状态映射 + 三接口封装 + 重试/异常分类
 
 全部用例 mock HTTP 层（urllib.request.urlopen），不发真实网络请求。
-重试策略的断言口径（docs/OJ对接设计.md 第十五章）：
+重试策略的断言口径（docs/design/OJ对接设计.md 第十五章）：
 可自愈错误（网络/5xx/Internal Error）恰好重试 1 次（urlopen 调用 2 次）；
 不可自愈错误（401/400/File Error）不重试（调用 1 次）。
 """

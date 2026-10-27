@@ -41,7 +41,7 @@
 - multipart 上传 `file`（ZIP）字段；ZIP 内为 `manifest.xlsx`/`manifest.csv` 清单 + 每题一个 `.md`
 - 清单列：`file`（必填）、`code`、`tier`、`languages`、`compareStrategy`
 - 响应：`{"batchId", "total", "createdCount", "updatedCount", "skippedCount", "errorCount", "errors": [{"file", "reason"}]}`
-- 完整包格式、去重/覆盖语义与限制见 `docs/题库批量导入.md`
+- 完整包格式、去重/覆盖语义与限制见 `docs/guides/题库批量导入.md`
 
 ---
 
@@ -364,7 +364,7 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 - 已验证损坏文件与导入限额、物理错误行号、失败行回滚、密码不覆盖、动作权限、当前人数统计、组织删除与 M2M 正反入口约束，以及转退班后的访问变化和历史保留。
 - 后台教学班表单在同一事务中先加入新组成班、再移除旧组成班，合法替换不会违反非空约束。合班权限旧测试相应修正准备数据，保留原有授权断言。
 - 验证命令：`python manage.py test`、`python manage.py check`、`python manage.py makemigrations --check --dry-run`、`git diff --check`。未执行业务库迁移，学号占位规则未调整。
-- 此为 2026-10-26 教务阶段的历史验收基线。Git 协作规则统一见 [AGENTS.md 的版本管理约定](../AGENTS.md#版本管理)。
+- 此为 2026-10-26 教务阶段的历史验收基线。Git 协作规则统一见 [AGENTS.md 的版本管理约定](../../AGENTS.md#版本管理)。
 
 ### 3.9 非学生端补齐（2026-10-27）
 
@@ -455,7 +455,7 @@ SMTP 可用后实施（见《后端落地问题清单.md》3.2）。
 - **响应 200**：`{"batchId", "total", "createdCount", "updatedCount", "skippedCount", "errorCount", "errors": [{"file", "reason"}]}`
 - **响应 400**：ZIP/清单结构错误（缺 manifest、路径穿越、超过大小/数量限制等）
 - **导入语义**：题目进入公共题库；按 `source_code` 去重，内容未变跳过，内容变化且勾选覆盖时更新并 `revision+1`
-- 完整包格式、限制与操作步骤见 `docs/题库批量导入.md`
+- 完整包格式、限制与操作步骤见 `docs/guides/题库批量导入.md`
 
 ---
 

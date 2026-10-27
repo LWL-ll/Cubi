@@ -747,7 +747,7 @@ v1 经外部设计审查（P0×5 / P1×14 / P2×8），本版修订：
 
 - **部署契约落地**：新建 `deploy/judge-env.md`（实例/认证/实测结论表/资源档/go-judge 侧要求/Django 侧部署步骤/变更流程）与 `deploy/nginx-oj.conf`（/run、/file 仅应用服务器可达、/config 关闭或限源、其余路径 403 的限源模板）
 - **实测脚本**：`scripts/sandbox_probe.py` 一次性实测（cgroup 红线/编译命令/语言版本/标准库抽样/绝对路径/内存限制强制），输出结论冻结进部署契约——镜像升级后必须重跑并更新契约
-- **验收清单**：`docs/OJ验收清单.md` 端到端六节（环境自检 → 录题组卷 → 真实判题 → SPJ 与锁定 → 租约运维 → 结论），每步含预期结果
+- **验收清单**：`docs/checklists/OJ验收清单.md` 端到端六节（环境自检 → 录题组卷 → 真实判题 → SPJ 与锁定 → 租约运维 → 结论），每步含预期结果
 - **部署红线重申**：cgroup 验收失败即拒绝启动判题（不降级运行）；nginx 限源验收后 /config 关闭；凭证只走 OJ_AUTH_TOKEN 环境变量
 - **验收修复（围栏末尾换行）**：端到端验收实测发现 `extractBlocks` 用 `'\n'.join` 丢失数据围栏内容末尾换行，导致 expected 存成 `"30"` 而程序输出 `"30\n"`，exact 逐字节比对误判 WA。修复口径：4 个数据围栏（input-sample/output-sample/input/output）按**文件语义**保留内容末尾换行（与程序 stdout 行尾一致）；spj-python 是代码块不在此列。此后录题数据一律按文件内容存储，比对层（第五章三策略）无需任何规范化补偿
 - **验收修复（checker 状态门槛）**：实测发现 runSpj 仅认 Accepted，而部分分协议要求 checker exit≠0（go-judge 必然报 `Nonzero Exit Status`）→ 部分分被误判为 checker 故障置 system_error。**v6 的「checker 非 Accepted 一律按故障处理」作废**，修正口径：checker 正常执行 = Accepted（exit 0 满分）+ Nonzero Exit Status（exit≠0 部分分协议信号），二者进分数协议；其余状态（TLE/MLE/OLE/Signalled/Dangerous Syscall/File Error/Internal Error）仍按故障重试 1 次。单元测试 mock 教训：`Accepted + exitStatus≠0` 是现实不存在的组合，mock 必须用真实状态字面量

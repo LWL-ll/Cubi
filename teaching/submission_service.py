@@ -1,6 +1,6 @@
 """提交受理服务层：同步校验 + 快照冻结 + 原子建表 + 投递
 
-docs/OJ对接设计.md 第七章：
+docs/design/OJ对接设计.md 第七章：
 - 九项同步校验（毫秒级 400/404/429 快速失败）
 - 受理流程：校验与建表同事务（防并发绕过频率闸），
   事务提交后 on_commit 投递判题任务（long 集群）
@@ -222,9 +222,9 @@ def createSubmissionRecord(user, problem, homework, language, code, submitType,
 def dispatchJudgeTask(submissionId):
     """注册事务提交后的投递回调：async_task 投递 long 集群并回写 q2_task_id
 
-    任务函数签名 runJudgeTask(submissionId)（docs/OJ对接设计.md 7.2）。
+    任务函数签名 runJudgeTask(submissionId)（docs/design/OJ对接设计.md 7.2）。
     投递失败不影响受理响应（记日志、q2_task_id 留空），
-    补投扫描定时任务兜底（docs/OJ对接设计.md 7.2）。
+    补投扫描定时任务兜底（docs/design/OJ对接设计.md 7.2）。
     """
 
     def doDispatch():

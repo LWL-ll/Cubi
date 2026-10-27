@@ -59,7 +59,7 @@ class SubmissionListCreateView(APIView):
     """提交受理与我的提交列表：POST/GET /api/submissions/
 
     POST：受理提交（九项同步校验 + 快照冻结 + on_commit 投递，
-    逻辑见 teaching/submission_service.py，docs/OJ对接设计.md 第七章）。
+    逻辑见 teaching/submission_service.py，docs/design/OJ对接设计.md 第七章）。
     GET：当前用户的提交列表（超管可见全部），分页 20/页，
     支持 problem/homework/status 过滤。
     权限码：homework:view（学生；教师无此码，403）。

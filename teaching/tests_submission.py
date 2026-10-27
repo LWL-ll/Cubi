@@ -1,6 +1,6 @@
 """提交 API 测试：受理九项校验 + 快照冻结 + 投递断言 + 查询对象级与白名单
 
-规格：docs/OJ对接设计.md 第七章（同步层）与 12.2（查询 API）。
+规格：docs/design/OJ对接设计.md 第七章（同步层）与 12.2（查询 API）。
 投递断言口径：async_task 以 (函数路径, submissionId, cluster='long')
 投递一次；投递失败不影响 200 响应（q2_task_id 留空，补投扫描兜底）。
 """

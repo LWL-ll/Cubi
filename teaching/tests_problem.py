@@ -1,6 +1,6 @@
 """录题 API 与 markdown 解析器测试
 
-规格：docs/OJ对接设计.md 第十章（markdown 录题格式）、
+规格：docs/design/OJ对接设计.md 第十章（markdown 录题格式）、
 12.1（题库两级归属）、12.2（题目接口）、12.3（端点决定归属）、
 6.2（保密链：tests/spj_code 永不下发）。
 

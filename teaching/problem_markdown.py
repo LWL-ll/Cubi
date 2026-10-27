@@ -1,4 +1,4 @@
-"""Markdown 录题解析器（docs/OJ对接设计.md 第十章）
+"""Markdown 录题解析器（docs/design/OJ对接设计.md 第十章）
 
 纯函数零 DB：把单文件 markdown 解析为题目字段。
 约定代码块标签：input-sample/output-sample（公开样例）、

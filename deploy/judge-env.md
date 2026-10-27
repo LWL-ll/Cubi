@@ -3,7 +3,7 @@
 > 本文是 OJ 判题链路的部署契约：语言/镜像实测结论 + go-judge 参数 +
 > Django 侧部署步骤 + 验收红线。任何一方变更必须同步修订本文并重跑
 > `scripts/sandbox_probe.py` 实测。
-> 规格出处：docs/OJ对接设计.md（第二/三/四/五/十三/十四章）。
+> 规格出处：docs/design/OJ对接设计.md（第二/三/四/五/十三/十四章）。
 
 ## 一、沙箱实例与认证
 
@@ -81,7 +81,7 @@ Python 直接 `python3 main.py` 内联，无编译步）
    （django-q2 约束：retry 必须大于 timeout，否则任务超时被杀前就重投导致并发执行）
 4. **应用服务**：runserver/gunicorn 按项目既有部署方式；SQLite 单写者，
    切 PG 后需为提交频率闸加用户行 `select_for_update`（7.1 注释）
-5. **验收**：跑通 `docs/OJ验收清单.md` 全链路后上线；部署验收强制验证
+5. **验收**：跑通 `docs/checklists/OJ验收清单.md` 全链路后上线；部署验收强制验证
    cgroup 隔离可用，失败即拒绝启动判题
 
 ## 六、变更流程
@@ -90,4 +90,4 @@ Python 直接 `python3 main.py` 内联，无编译步）
 1. 重跑 `scripts/sandbox_probe.py`（`OJ_AUTH_TOKEN=xxx python scripts/sandbox_probe.py`）
 2. 用输出更新本文第二节实测表
 3. 全量测试回归（`python manage.py test`，当前 231 测试）
-4. 重跑 `docs/OJ验收清单.md` 端到端验收
+4. 重跑 `docs/checklists/OJ验收清单.md` 端到端验收

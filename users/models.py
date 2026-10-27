@@ -63,7 +63,7 @@ class SchoolIdentity(models.Model):
     - User 只管登录，学号/工号只是绑定的学校身份
     - 封闭式下由教务导入直接创建并置为 verified；
       将来开放注册后走 pending → 审核流程
-    - 详见 docs/数据库表重构设计.md
+    - 详见 docs/design/数据库表重构设计.md
     """
     IDENTITY_STUDENT = 'student'
     IDENTITY_TEACHER = 'teacher'
