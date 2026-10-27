@@ -173,7 +173,7 @@ class OrganizationTests(OfficeApiTestBase):
         idle = self.addClass()
         other = CourseCollege.objects.create(course=self.course, department=self.otherDepartment)
         # 历史错误候选池关联不会改变“本课程×学院正在使用”的判断范围。
-        other.admin_classes.add(idle)
+        CourseCollege.admin_classes.through.objects.create(coursecollege=other, adminclass=idle)
         idle.course_colleges.remove(other)
         self.assertTrue(self.cc.admin_classes.filter(pk=idle.pk).exists())
 

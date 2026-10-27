@@ -8,6 +8,7 @@ from django.dispatch import receiver
 from .models import AdminClass, CourseCollege, TeachingClass
 from .services import (lockAdminClassCourses, lockTeachingCourse, syncCourseTeamMembership,
                        validateAdminClassDeletion, validateTeachingClasses)
+from .term_service import requireTermWrite
 
 
 @receiver(pre_delete, sender=CourseCollege)
@@ -29,6 +30,12 @@ def revokeDeletedLeader(sender, instance, using, **kwargs):
 @receiver(m2m_changed, sender=TeachingClass.admin_classes.through)
 def validateTeachingClassMembers(sender, instance, action, reverse, pk_set,
                                   using, **kwargs):
+    if action.startswith('pre_'):
+        classes = (instance.teaching_classes.using(using).all() if reverse else [instance])
+        if reverse and action != 'pre_clear':
+            classes = TeachingClass.objects.using(using).filter(pk__in=pk_set)
+        for code in sorted({item.term for item in classes}):
+            requireTermWrite(code, using=using)
     if action in ('pre_remove', 'pre_clear'):
         if reverse:
             teachingClasses = instance.teaching_classes.using(using).all()
@@ -70,6 +77,15 @@ def validateTeachingClassMembers(sender, instance, action, reverse, pk_set,
 @receiver(m2m_changed, sender=CourseCollege.admin_classes.through)
 def protectCandidateAdminClasses(sender, instance, action, reverse, pk_set,
                                  using, **kwargs):
+    if action == 'pre_add' and pk_set:
+        pairs = ((cc, [instance]) for cc in CourseCollege.objects.using(using).filter(pk__in=pk_set)) \
+            if reverse else [(instance, AdminClass.objects.using(using).filter(pk__in=pk_set))]
+        for cc, classes in pairs:
+            if not cc.course.is_active or not cc.department.is_active:
+                raise ValidationError('课程或学院未启用，不能新增候选班')
+            if any(not item.is_active or not item.major.is_active
+                   or item.major.department_id != cc.department_id for item in classes):
+                raise ValidationError('候选行政班必须启用且属于本学院的启用专业')
     if action not in ('pre_remove', 'pre_clear'):
         return
     if reverse:
@@ -94,3 +110,21 @@ def protectCandidateAdminClasses(sender, instance, action, reverse, pk_set,
 def protectAdminClassHistory(sender, instance, using, **kwargs):
     lockAdminClassCourses(instance, using)
     validateAdminClassDeletion(instance, using)
+
+
+@receiver(pre_delete, sender=TeachingClass)
+def protectClosedTeachingClass(sender, instance, using, **kwargs):
+    requireTermWrite(instance.term, using=using)
+
+
+@receiver(m2m_changed, sender=TeachingClass.teachers.through)
+def protectTeachingClassTeachers(sender, instance, action, reverse, pk_set, using, **kwargs):
+    if not action.startswith('pre_'):
+        return
+    if reverse:
+        classes = instance.teaching_classes.using(using).all() if action == 'pre_clear' else (
+            TeachingClass.objects.using(using).filter(pk__in=pk_set))
+    else:
+        classes = [instance]
+    for code in sorted({tc.term for tc in classes}):
+        requireTermWrite(code, using=using)

@@ -13,6 +13,7 @@ from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 
 from .models import AdminClass, ClassMembership, Course, CourseCollege, TeachingClass
+from .term_service import lockMembershipTerms, requireClassWrite, requireTermWrite
 
 
 def syncCourseTeamMembership(userId, using='default'):
@@ -38,8 +39,15 @@ def enrollStudent(profile, adminClass, joinedAt=None):
     已在目标班时幂等返回现有关系（防重复导入产生脏数据）。
     """
     joinedAt = joinedAt or date.today()
+    lockMembershipTerms(profile, adminClass)
     # UPDATE 先获取写锁：SQLite 的 select_for_update 不生效，PG 同样按行串行。
     type(profile).objects.filter(pk=profile.pk).update(id=F('id'))
+    profile.refresh_from_db()
+    adminClass.refresh_from_db()
+    if profile.academic_status != profile.ACADEMIC_ACTIVE:
+        raise ValidationError('只有在读学生可以入班')
+    if not adminClass.is_active or not adminClass.major.is_active or not adminClass.major.department.is_active:
+        raise ValidationError('目标行政班、专业或学院未启用')
     current = profile.memberships.filter(left_at__isnull=True).first()
     if current is not None:
         if current.admin_class_id == adminClass.id:
@@ -75,10 +83,16 @@ def validateTeachingClasses(courseCollege, term, adminClasses, excludeId=None,
 
 @transaction.atomic
 def createTeachingClass(courseCollege, name, term, adminClasses):
+    requireTermWrite(term)
     lockTeachingCourse(courseCollege)
+    courseCollege.refresh_from_db()
+    if not courseCollege.course.is_active or not courseCollege.department.is_active:
+        raise ValidationError('课程或学院未启用，不能组班')
     adminClasses = list(adminClasses)
     if not adminClasses:
         raise ValidationError('教学班至少包含一个行政班')
+    if any(not item.is_active or not item.major.is_active for item in adminClasses):
+        raise ValidationError('停用的行政班或专业不能组班')
     validateTeachingClasses(courseCollege, term, adminClasses)
     if TeachingClass.objects.filter(
             course_college=courseCollege, term=term, name=name).exists():
@@ -92,6 +106,7 @@ def createTeachingClass(courseCollege, name, term, adminClasses):
 
 @transaction.atomic
 def deleteTeachingClass(teachingClass):
+    requireClassWrite(teachingClass)
     lockTeachingCourse(teachingClass.course_college)
     current = TeachingClass.objects.filter(pk=teachingClass.pk).first()
     if current is None:
@@ -104,6 +119,8 @@ def deleteTeachingClass(teachingClass):
 
 @transaction.atomic
 def deleteCourseCollege(courseCollege):
+    for tc in courseCollege.teaching_classes.order_by('term', 'pk'):
+        requireClassWrite(tc)
     lockTeachingCourse(courseCollege)
     current = CourseCollege.objects.filter(pk=courseCollege.pk).first()
     if current is None:
@@ -152,6 +169,7 @@ def removeCandidateAdminClass(courseCollege, adminClass):
 
 @transaction.atomic
 def removeTeachingAdminClass(teachingClass, adminClass):
+    requireClassWrite(teachingClass)
     lockTeachingCourse(teachingClass.course_college)
     current = TeachingClass.objects.filter(pk=teachingClass.pk).first()
     if current is None:
@@ -168,14 +186,17 @@ def _lockStudentProfile(profile):
 @transaction.atomic
 def transferStudentToday(profile, adminClass):
     """普通转班只改变当日成员关系，保留学生账号、学籍和历史提交。"""
+    lockMembershipTerms(profile, adminClass)
     profile = _lockStudentProfile(profile)
+    if profile.academic_status != profile.ACADEMIC_ACTIVE:
+        raise ValidationError('只有在读学生可以转班或重新入班')
     if not AdminClass.objects.filter(pk=adminClass.pk).update(id=F('id')):
         raise ValidationError('目标行政班不存在')
     target = AdminClass.objects.select_related('major__department').get(pk=adminClass.pk)
     if (target.major_id != profile.major_id or target.enrollment_year is None
             or target.enrollment_year != profile.enrollment_year):
         raise ValidationError('普通转班只能选择同专业、同入学年份的行政班')
-    if not target.major.is_active or not target.major.department.is_active:
+    if not target.is_active or not target.major.is_active or not target.major.department.is_active:
         raise ValidationError('目标行政班所属专业或学院未启用')
     today = timezone.localdate()
     current = profile.memberships.filter(left_at__isnull=True).first()
@@ -187,6 +208,7 @@ def transferStudentToday(profile, adminClass):
 @transaction.atomic
 def leaveStudentToday(profile):
     """当日退班留痕；重复退班无操作，不改变学生学籍状态。"""
+    lockMembershipTerms(profile)
     profile = _lockStudentProfile(profile)
     current = profile.memberships.filter(left_at__isnull=True).first()
     if current is None:

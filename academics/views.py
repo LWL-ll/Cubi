@@ -20,9 +20,8 @@ from .models import (AdminClass, ClassMembership, Course, CourseCollege,
 from .services import (createTeachingClass, deleteCourseCollege, enrollStudent,
                        removeCandidateAdminClass)
 from .student_no import parseStudentNo
+from .term_service import currentTermCode
 
-# 当前学期：教学班组班默认值（后续做学期管理后再接学期表）
-CURRENT_TERM = '2026-2027-1'
 MAX_XLSX_BYTES = 10 * 1024 * 1024
 MAX_XLSX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
 MAX_IMPORT_ROWS = 10000
@@ -103,6 +102,8 @@ def findTeacherByNo(teacherNo):
     user = User.objects.filter(username=teacherNo).first()
     if user is None:
         return None, f'工号 {teacherNo} 的教师不存在，请先在批量导入中导入教师'
+    if not user.is_active:
+        return None, f'工号 {teacherNo} 的教师账号已停用'
     if not isTeacherUser(user):
         return None, f'工号 {teacherNo} 不是教师账号'
     if not user.identities.filter(
@@ -260,13 +261,22 @@ def importTeachersToCourse(rows, cc, *, actor):
         raise PermissionDenied('导入课程教师并分配任课需要 class:assign_teacher 权限')
     teacherGroup = getGroup('教师')
     def importRow(cells):
+        from .models import AcademicTerm
+        from .term_service import requireClassWrite
+        teachingClasses = list(cc.teaching_classes.exclude(term__in=AcademicTerm.objects.exclude(
+            status=AcademicTerm.OPEN).values('code')).order_by('term', 'pk'))
+        for teachingClass in teachingClasses:
+            requireClassWrite(teachingClass)
+        cc.refresh_from_db()
+        if not cc.course.is_active or not cc.department.is_active:
+            raise ValidationError('课程或学院未启用')
         username, name, password = validateAccountRow(cells, '工号')
         if User.objects.filter(username=username).exists():
             raise ValidationError(f'工号 {username} 已存在')
         user = createTeacherAccount(username, name, password, teacherGroup)
         # 加入本课程教师池，并自动分配到本课程已组建的每个教学班
         cc.teachers.add(user)
-        for teachingClass in cc.teaching_classes.all():
+        for teachingClass in teachingClasses:
             teachingClass.teachers.add(user)
         return f'{name}（{username}）'
     return runImportRows(rows, importRow)
@@ -469,11 +479,16 @@ def renderCourseCollege(request, courseId, departmentId):
             else:
                 messages.success(request, f'已移除班级 {adminClass.name}（学生和教师账号保留）')
         elif action == 'createTeachingClass':
+            try:
+                term = currentTermCode()
+            except ValidationError as err:
+                messages.error(request, '；'.join(err.messages))
+                return redirect('office_course_college', courseId=courseId, departmentId=departmentId)
             name = request.POST.get('name', '').strip()
             if not name:
                 messages.error(request, '教学班名称不能为空')
             elif TeachingClass.objects.filter(
-                    course_college=cc, term=CURRENT_TERM, name=name).exists():
+                    course_college=cc, term=term, name=name).exists():
                 messages.error(request, f'同学期已存在同名教学班 {name}')
             else:
                 adminClassIds = request.POST.getlist('adminClassIds')
@@ -482,7 +497,7 @@ def renderCourseCollege(request, courseId, departmentId):
                     messages.error(request, '请至少选择一个组成班级')
                 else:
                     try:
-                        createTeachingClass(cc, name, CURRENT_TERM, adminClasses)
+                        createTeachingClass(cc, name, term, adminClasses)
                     except ValidationError as err:
                         messages.error(request, '；'.join(err.messages))
                     else:

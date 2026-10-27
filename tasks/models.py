@@ -54,3 +54,60 @@ class AsyncTask(models.Model):
 
     def __str__(self):
         return f'{self.get_type_display()} #{self.pk}（{self.get_status_display()}）'
+
+
+class OfficeImportJob(models.Model):
+    """教务导入批次；原始表格仅短期保存于私有目录，不进入队列参数。"""
+    TYPE_CHOICES = [
+        ('course', '课程'), ('teacher', '教师'), ('student', '学生自动分班'),
+        ('class_student', '指定行政班学生'), ('course_teacher', '课程教师'),
+    ]
+    STATUS_PENDING = 'pending'
+    STATUS_RUNNING = 'running'
+    STATUS_SUCCEEDED = 'succeeded'
+    STATUS_PARTIAL = 'partial'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, '等待中'), (STATUS_RUNNING, '执行中'),
+        (STATUS_SUCCEEDED, '全部成功'), (STATUS_PARTIAL, '部分成功'),
+        (STATUS_FAILED, '失败'),
+    ]
+
+    import_type = models.CharField('导入类型', max_length=20, choices=TYPE_CHOICES)
+    status = models.CharField('状态', max_length=12, choices=STATUS_CHOICES,
+                              default=STATUS_PENDING)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, models.SET_NULL, null=True,
+        related_name='office_import_jobs', verbose_name='提交人')
+    admin_class = models.ForeignKey(
+        'academics.AdminClass', models.SET_NULL, null=True, blank=True,
+        related_name='import_jobs', verbose_name='目标行政班')
+    course_college = models.ForeignKey(
+        'academics.CourseCollege', models.SET_NULL, null=True, blank=True,
+        related_name='import_jobs', verbose_name='目标课程学院')
+    original_name = models.CharField('文件名', max_length=255)
+    source_name = models.CharField('私有存储标识', max_length=80, blank=True)
+    total = models.PositiveIntegerField('有效数据行数', default=0)
+    completed = models.PositiveIntegerField('已处理行数', default=0)
+    success_count = models.PositiveIntegerField('成功行数', default=0)
+    error_count = models.PositiveIntegerField('失败行数', default=0)
+    row_cursor = models.PositiveIntegerField('已提交物理行游标', default=0)
+    errors = models.JSONField('逐行错误', default=list)
+    error = models.CharField('批次错误', max_length=200, blank=True)
+    attempt = models.PositiveIntegerField('执行轮次', default=1)
+    expires_at = models.DateTimeField('排队或执行截止时间')
+    created_at = models.DateTimeField('提交时间', auto_now_add=True)
+    started_at = models.DateTimeField('开始时间', null=True, blank=True)
+    finished_at = models.DateTimeField('结束时间', null=True, blank=True)
+
+    class Meta:
+        verbose_name = '教务导入批次'
+        verbose_name_plural = '教务导入批次'
+        ordering = ['-created_at', '-id']
+        indexes = [
+            models.Index(fields=['created_by', 'created_at'], name='office_import_owner_idx'),
+            models.Index(fields=['status', 'expires_at'], name='office_import_expiry_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.get_import_type_display()}导入 #{self.pk}（{self.get_status_display()}）'

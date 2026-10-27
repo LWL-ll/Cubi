@@ -26,6 +26,7 @@ from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import ValidationError
 
 from academics.models import TeachingClass
+from academics.term_service import requireTeachingWrite
 from teaching.models import (Homework, HomeworkProblem, Problem, Submission,
                              buildProblemSnapshot)
 from teaching.helpers import getStudentTeachingClass
@@ -115,6 +116,7 @@ def createHomework(user, teachingClass, payload):
     title, startAt, deadline, problemIds = validateHomeworkPayload(payload)
     problems = loadSelectableProblems(user, problemIds)
     with transaction.atomic():
+        requireTeachingWrite(teachingClass)
         homework = Homework.objects.create(
             teaching_class=teachingClass, title=title,
             start_at=startAt, deadline=deadline, created_by=user)
@@ -164,6 +166,7 @@ def updateHomework(user, homework, payload):
     """
     title, startAt, deadline, problemIds = validateHomeworkPayload(payload)
     with transaction.atomic():
+        requireTeachingWrite(homework.teaching_class)
         homework = lockHomework(homework.pk)
         if deadline < homework.deadline:
             raise ValidationError('截止时间只允许向后延长')
@@ -196,6 +199,7 @@ def updateHomework(user, homework, payload):
 def deleteHomework(homework):
     """删除作业：有提交 400（历史数据保护），无提交连带中间表删除"""
     with transaction.atomic():
+        requireTeachingWrite(homework.teaching_class)
         homework = lockHomework(homework.pk)
         if Submission.objects.filter(homework=homework).exists():
             raise ValidationError('已有提交的作业不可删除')

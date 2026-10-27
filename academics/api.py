@@ -8,10 +8,11 @@ V2 说明：教师任课挂教学班（不再挂行政班），
 教学班管理（组班/教师分配/解散）统一在 TeachingClass* 视图。
 """
 from collections.abc import Mapping
+from functools import wraps
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, F
 from rest_framework.exceptions import ValidationError as RequestValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -26,7 +27,10 @@ from .services import (createTeachingClass, deleteAdminClass, deleteCourseColleg
 from .serializers import (AdminClassSerializer, CourseCollegeSerializer,
                           CourseSerializer, DepartmentSerializer,
                           TeachingClassSerializer)
-from .views import (CURRENT_TERM, findTeacherByNo, importCourses,
+from .audit_service import organizationState, recordAudit
+from .term_service import currentTermCode, requireClassWrite
+from .models import AcademicTerm
+from .views import (findTeacherByNo, importCourses,
                     importStudents, importStudentsAuto, importTeachers,
                     importTeachersToCourse, parseXlsxRows,
                     setCourseCollegeLeader, unsetCourseCollegeLeader)
@@ -64,7 +68,47 @@ def textField(payload, key, limit, default=None):
     return value
 
 
+def auditOfficeMutation(method):
+    @wraps(method)
+    def wrapped(view, request, *args, **kwargs):
+        # 认证/功能权限由 DRF 在事务外完成；事务内先写后读，避免 SQLite 锁升级。
+        # 低频教务组织操作与学期关闭共用锁，审计前后快照与业务原子提交。
+        with transaction.atomic():
+            AcademicTerm.objects.update(id=F('id'))
+            target = view.auditTarget(kwargs)
+            before = organizationState(target)
+            response = method(view, request, *args, **kwargs)
+            if response.status_code >= 400:
+                transaction.set_rollback(True)
+                return response
+            after = view.auditTarget(kwargs, response)
+            state = organizationState(after)
+            if 'successCount' in getattr(response, 'data', {}):
+                state['successCount'] = response.data['successCount']
+                state['errorCount'] = len(response.data.get('errors', []))
+            action = request.data.get('action', request.method)
+            recordAudit(request.user, f'office.{view.__class__.__name__}.{action}'[:100],
+                        after or target, before, state)
+            return response
+    return wrapped
+
+
 class OfficeAPIView(APIView):
+
+    def auditTarget(self, kwargs, response=None):
+        if 'teachingClassId' in kwargs:
+            return TeachingClass.objects.filter(pk=kwargs['teachingClassId']).first()
+        if 'adminClassId' in kwargs:
+            return AdminClass.objects.filter(pk=kwargs['adminClassId']).first()
+        if 'courseId' in kwargs and 'departmentId' in kwargs:
+            return CourseCollege.objects.filter(course_id=kwargs['courseId'],
+                                                 department_id=kwargs['departmentId']).first()
+        if 'courseId' in kwargs:
+            return Course.objects.filter(pk=kwargs['courseId']).first()
+        if response is not None and self.__class__.__name__ == 'TeachingClassListView':
+            return TeachingClass.objects.filter(pk=response.data.get('id')).first()
+        return None
+
     def handle_exception(self, exc):
         if isinstance(exc, ValidationError):
             return Response({'error': '；'.join(exc.messages)}, status=400)
@@ -120,6 +164,7 @@ class CourseDetailView(OfficeAPIView):
             return errResp
         return Response(CourseSerializer(course).data)
 
+    @auditOfficeMutation
     def post(self, request, courseId):
         """添加/移除开设学院：动作级校验，需要 course:assign_class"""
         if not hasPerm(request.user, 'course:assign_class'):
@@ -136,6 +181,8 @@ class CourseDetailView(OfficeAPIView):
         if errResp:
             return errResp
         if action == 'addDepartment':
+            if not course.is_active or not department.is_active:
+                raise ValidationError('课程或学院未启用，不能开设课程')
             cc, created = CourseCollege.objects.get_or_create(
                 course=course, department=department)
             return Response({'message': f'已为课程开设学院 {department.name}'})
@@ -162,6 +209,7 @@ class CourseCollegeView(OfficeAPIView):
             return Response({'error': '该课程尚未开设此学院'}, status=404)
         return Response(CourseCollegeSerializer(cc).data)
 
+    @auditOfficeMutation
     def post(self, request, courseId, departmentId):
         """按动作细分权限码：设组长=user:assign_role、班级分配=course:assign_class、
         教师/学生导入=class:manage"""
@@ -260,6 +308,7 @@ class AdminClassDetailView(OfficeAPIView):
             return errResp
         return Response(AdminClassSerializer(adminClass).data)
 
+    @auditOfficeMutation
     def delete(self, request, adminClassId):
         """仅允许删除没有成员历史且未组成教学班的闲置行政班。"""
         adminClass, errResp = findOr404(AdminClass, adminClassId, '行政班')
@@ -269,6 +318,7 @@ class AdminClassDetailView(OfficeAPIView):
         deleteAdminClass(adminClass)
         return Response({'message': f'已删除班级 {adminClassName}'})
 
+    @auditOfficeMutation
     def post(self, request, adminClassId):
         """导入学生到本班：需要 class:manage"""
         adminClass, errResp = findOr404(AdminClass, adminClassId, '行政班')
@@ -303,6 +353,7 @@ class TeachingClassListView(OfficeAPIView):
             teachingClasses = teachingClasses.filter(term=term)
         return Response(TeachingClassSerializer(teachingClasses, many=True).data)
 
+    @auditOfficeMutation
     def post(self, request):
         """组教学班：名称 + 课程×学院 + 组成行政班（至少一个），默认继承教师池"""
         if not hasPerm(request.user, 'course:assign_class'):
@@ -314,7 +365,9 @@ class TeachingClassListView(OfficeAPIView):
         if errResp:
             return errResp
         name = textField(payload, 'name', 50)
-        term = textField(payload, 'term', 20, CURRENT_TERM)
+        term = textField(payload, 'term', 20) if 'term' in payload else currentTermCode()
+        if not AcademicTerm.objects.filter(code=term).exists():
+            raise ValidationError('请先在学期管理中登记该学期')
         # 组成班级必须都属于该课程×学院（服务端兜底，防伪造请求）
         rawIds = payload.get('adminClassIds')
         if not isinstance(rawIds, list) or not rawIds:
@@ -349,6 +402,7 @@ class TeachingClassDetailView(OfficeAPIView):
             return errResp
         return Response(TeachingClassSerializer(teachingClass).data)
 
+    @auditOfficeMutation
     def delete(self, request, teachingClassId):
         """解散教学班：组成班级、教师、学生数据都保留（教学班是授课组织）"""
         if not hasPerm(request.user, 'class:manage'):
@@ -361,11 +415,13 @@ class TeachingClassDetailView(OfficeAPIView):
         deleteTeachingClass(teachingClass)
         return Response({'message': f'已解散教学班 {teachingClassName}'})
 
+    @auditOfficeMutation
     def post(self, request, teachingClassId):
         teachingClass, errResp = findOr404(
             TeachingClass, teachingClassId, '教学班')
         if errResp:
             return errResp
+        requireClassWrite(teachingClass)
         payload = objectPayload(request.data, {
             'action', 'adminClassId', 'teacherId', 'teacherNo'})
         action = textField(payload, 'action', 40)
@@ -423,6 +479,8 @@ class TeachingClassDetailView(OfficeAPIView):
                     if not cc.teachers.filter(id=teacher.id).exists():
                         return Response(
                             {'error': '该教师不在本课程教师池中'}, status=400)
+                if not teacher.is_active:
+                    raise ValidationError('已停用的教师不能新增任课关系')
                 teachingClass.teachers.add(teacher)
                 return Response(
                     {'message': f'已添加教师 {teacher.name or teacher.username}'})
@@ -446,6 +504,7 @@ class ImportView(OfficeAPIView):
     permission_classes = [PermRequired]
     permCode = 'class:manage'
 
+    @auditOfficeMutation
     def post(self, request):
         payload = objectPayload(request.data, {'type', 'file'})
         importType = textField(payload, 'type', 10)

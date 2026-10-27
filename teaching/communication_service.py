@@ -7,6 +7,7 @@ from django.db.models import DateTimeField, F, Max, OuterRef, Subquery
 from django.http import Http404
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
+from academics.term_service import requireTeachingWrite
 
 from teaching.helpers import getStudentTeachingClass, getTeacherTeachingClass
 from teaching.homework_service import (getManageableHomework, getStudentHomeworkQuery,
@@ -53,12 +54,14 @@ def listClassNotices(teachingClass, user=None):
 
 def createNotice(user, teachingClass, payload):
     fields = validateNotice(payload, creating=True)
-    return ClassNotice.objects.create(
-        teaching_class=teachingClass, created_by=user, updated_by=user, **fields)
+    with transaction.atomic():
+        requireTeachingWrite(teachingClass)
+        return ClassNotice.objects.create(
+            teaching_class=teachingClass, created_by=user, updated_by=user, **fields)
 
 
 def getNotice(user, noticeId, *, student=False):
-    notices = ClassNotice.objects.select_related('created_by', 'updated_by')
+    notices = ClassNotice.objects.select_related('created_by', 'updated_by', 'teaching_class')
     if student:
         readAt = NoticeRead.objects.filter(
             notice_id=OuterRef('pk'), user=user).values('read_at')[:1]
@@ -82,7 +85,9 @@ def lockNotice(noticeId):
 
 def updateNotice(user, notice, payload):
     fields = validateNotice(payload, creating=False)
+    teachingClass = notice.teaching_class
     with transaction.atomic():
+        requireTeachingWrite(teachingClass)
         notice = lockNotice(notice.pk)
         for key, value in fields.items():
             setattr(notice, key, value)
@@ -92,7 +97,9 @@ def updateNotice(user, notice, payload):
 
 
 def deleteNotice(notice):
+    teachingClass = notice.teaching_class
     with transaction.atomic():
+        requireTeachingWrite(teachingClass)
         notice = lockNotice(notice.pk)
         notice.delete()
 
@@ -140,6 +147,7 @@ def previewReminderRecipients(homework):
 def sendHomeworkReminders(user, homework, payload):
     validateEmptyPayload(payload)
     with transaction.atomic():
+        requireTeachingWrite(homework.teaching_class)
         # 与交卷及改作业共用锁；重读后计算当前题目、提交和去重窗口。
         homework = lockHomework(homework.pk)
         homework = getManageableHomework(user, homework.pk)

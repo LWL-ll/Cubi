@@ -10,7 +10,8 @@ from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
 from rest_framework.exceptions import ValidationError
 
-from academics.models import ClassMembership
+from academics.models import ClassMembership, TeachingClassRecord
+from academics.term_service import requireTeachingWrite
 from teaching.helpers import getTeacherTeachingClass
 from teaching.models import Homework, Submission, SubmissionReview
 
@@ -20,6 +21,9 @@ PENDING_STATUSES = (Submission.STATUS_QUEUED, Submission.STATUS_RUNNING)
 
 
 def classRoster(teachingClass):
+    record = TeachingClassRecord.objects.filter(teaching_class=teachingClass).first()
+    if record is not None:
+        return record.roster
     memberships = ClassMembership.objects.filter(
         admin_class__teaching_classes=teachingClass, left_at__isnull=True
     ).select_related('student_profile__identity__user', 'admin_class').order_by(
@@ -97,6 +101,12 @@ def gradeRows(homeworks, roster):
                 'passed': bool(points) and passed == len(points),
             })
         result[homework.pk] = rows
+    records = TeachingClassRecord.objects.filter(
+        teaching_class_id__in={h.teaching_class_id for h in homeworks}, archived_at__isnull=False)
+    frozen = {int(key): book for record in records for key, book in record.gradebooks.items()}
+    for homework in homeworks:
+        if homework.pk in frozen:
+            result[homework.pk] = [row for row in frozen[homework.pk]['students'] if row['id'] in ids]
     return result
 
 
@@ -116,6 +126,10 @@ def gradeSummary(rows):
 
 
 def homeworkGradebook(homework):
+    record = TeachingClassRecord.objects.filter(teaching_class_id=homework.teaching_class_id,
+                                                archived_at__isnull=False).first()
+    if record is not None and str(homework.pk) in record.gradebooks:
+        return record.gradebooks[str(homework.pk)]
     prefetch_related_objects([homework], 'problems')
     roster = classRoster(homework.teaching_class)
     rows = gradeRows([homework], roster)[homework.pk]
@@ -188,7 +202,7 @@ def teacherSubmissions(teachingClass, params):
 
 def getTeacherSubmission(user, submissionId):
     submission = Submission.objects.select_related(
-        'homework', 'user', 'problem', 'judge_task', 'teacher_review__reviewed_by'
+        'homework__teaching_class', 'user', 'problem', 'judge_task', 'teacher_review__reviewed_by'
     ).filter(pk=submissionId, submit_type=Submission.SUBMIT_HOMEWORK,
              homework__isnull=False).first()
     if submission is None:
@@ -211,12 +225,22 @@ def saveReview(user, submission, payload):
         comment.encode('utf-8')
     except UnicodeEncodeError:
         raise ValidationError('批语包含无效字符')
+    teachingClass = submission.homework.teaching_class
     with transaction.atomic():
+        requireTeachingWrite(teachingClass, allowClosed=True)
         # 同一提交的评阅串行写入，教师身份只取当前会话。
         Submission.objects.filter(pk=submission.pk).update(id=F('id'))
         review, _ = SubmissionReview.objects.update_or_create(
             submission=submission, defaults={'comment': comment.strip(), 'reviewed_by': user})
     return review
+
+
+def deleteReview(submission):
+    teachingClass = submission.homework.teaching_class
+    with transaction.atomic():
+        requireTeachingWrite(teachingClass, allowClosed=True)
+        Submission.objects.filter(pk=submission.pk).update(id=F('id'))
+        SubmissionReview.objects.filter(submission=submission).delete()
 
 
 def exportGradebook(book):

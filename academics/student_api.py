@@ -2,7 +2,8 @@
 from collections.abc import Mapping
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import Exists, OuterRef, Prefetch, Q, Subquery
+from django.db import transaction
+from django.db.models import Exists, F, OuterRef, Prefetch, Q, Subquery
 from django.http import Http404
 from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
@@ -165,10 +166,19 @@ class StudentTransferView(APIView):
         if target is None:
             raise Http404('行政班不存在')
         try:
-            transferStudentToday(profile, target)
+            from .audit_service import recordAudit
+            from .term_service import lockMembershipTerms
+
+            with transaction.atomic():
+                lockMembershipTerms(profile, target)
+                StudentProfile.objects.filter(pk=profile.pk).update(id=F('id'))
+                before = studentData(getStudent(studentId))
+                transferStudentToday(profile, target)
+                after = studentData(getStudent(studentId))
+                recordAudit(request.user, 'student.transfer', profile, before, after)
         except DjangoValidationError as error:
             raise ValidationError(error.messages) from None
-        return Response(studentData(getStudent(studentId)))
+        return Response(after)
 
 
 class StudentLeaveView(APIView):
@@ -180,7 +190,32 @@ class StudentLeaveView(APIView):
         if not isinstance(request.data, Mapping) or request.data:
             raise ValidationError('请求体只能是空对象')
         try:
-            leaveStudentToday(profile)
+            from .audit_service import recordAudit
+            from .term_service import lockMembershipTerms
+
+            with transaction.atomic():
+                lockMembershipTerms(profile)
+                StudentProfile.objects.filter(pk=profile.pk).update(id=F('id'))
+                before = studentData(getStudent(studentId))
+                leaveStudentToday(profile)
+                after = studentData(getStudent(studentId))
+                recordAudit(request.user, 'student.leave', profile, before, after)
+        except DjangoValidationError as error:
+            raise ValidationError(error.messages) from None
+        return Response(after)
+
+
+class StudentAcademicView(APIView):
+    """教务学籍状态、转专业和入学年份维护；User.pk 作为学生编号。"""
+    permission_classes = [PermRequired]
+    permCode = 'class:manage'
+
+    def patch(self, request, studentId):
+        from .base_service import updateStudentAcademic
+
+        profile = getStudent(studentId)
+        try:
+            updateStudentAcademic(request.user, profile, request.data)
         except DjangoValidationError as error:
             raise ValidationError(error.messages) from None
         return Response(studentData(getStudent(studentId)))

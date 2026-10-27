@@ -5,9 +5,11 @@ from django.contrib.auth.models import Group
 from django.db import transaction
 
 from .models import SchoolIdentity, StudentProfile, TeacherProfile, User
+from academics.audit_admin import AuditAdminMixin, adminState
+from academics.audit_service import recordAudit
 
 
-class SuperuserOnlyAdminMixin:
+class SuperuserOnlyAdminMixin(AuditAdminMixin):
     """账号和角色管理仅限系统管理员，原生模型权限不能用于提权。"""
 
     def has_module_permission(self, request):
@@ -53,6 +55,7 @@ class CustomUserAdmin(SuperuserOnlyAdminMixin, UserAdmin):
             target.refresh_from_db(fields=['password'])
             if target.password != oldHash and target.has_usable_password():
                 type(target).objects.filter(pk=target.pk).update(must_change_password=True)
+                recordAudit(request.user, 'account.reset_password', target, after={'forcedChange': True})
         return response
 
     def list_groups(self, obj):
@@ -62,7 +65,7 @@ class CustomUserAdmin(SuperuserOnlyAdminMixin, UserAdmin):
 
 
 @admin.register(SchoolIdentity)
-class SchoolIdentityAdmin(admin.ModelAdmin):
+class SchoolIdentityAdmin(SuperuserOnlyAdminMixin, admin.ModelAdmin):
     """后台学校身份管理：学号/工号绑定"""
     list_display = ('school_number', 'identity_type', 'user', 'verification_status')
     list_filter = ('identity_type', 'verification_status')
@@ -70,15 +73,30 @@ class SchoolIdentityAdmin(admin.ModelAdmin):
 
 
 @admin.register(StudentProfile)
-class StudentProfileAdmin(admin.ModelAdmin):
+class StudentProfileAdmin(SuperuserOnlyAdminMixin, admin.ModelAdmin):
     """后台学生资料管理"""
     list_display = ('identity', 'major', 'enrollment_year', 'academic_status')
     list_filter = ('academic_status',)
     search_fields = ('identity__school_number',)
 
+    def get_readonly_fields(self, request, obj=None):
+        return ('identity',) if obj is not None else ()
+
+    def save_model(self, request, obj, form, change):
+        if change:
+            from academics.base_service import updateStudentAcademic
+            previous = StudentProfile.objects.select_related('identity__user').get(pk=obj.pk)
+            request._businessAuditBefore = adminState(previous)
+            updateStudentAcademic(request.user, previous, {
+                'academicStatus': obj.academic_status, 'majorId': obj.major_id,
+                'enrollmentYear': obj.enrollment_year})
+            obj.refresh_from_db()
+            return
+        super().save_model(request, obj, form, change)
+
 
 @admin.register(TeacherProfile)
-class TeacherProfileAdmin(admin.ModelAdmin):
+class TeacherProfileAdmin(SuperuserOnlyAdminMixin, admin.ModelAdmin):
     """后台教师资料管理"""
     list_display = ('identity', 'department', 'title')
     search_fields = ('identity__school_number',)

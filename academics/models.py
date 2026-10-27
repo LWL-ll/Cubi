@@ -50,6 +50,7 @@ class AdminClass(models.Model):
         on_delete=models.PROTECT, related_name='admin_classes')
     enrollment_year = models.SmallIntegerField('年级', null=True, blank=True)
     code = models.CharField('班级编码', max_length=32, blank=True)
+    is_active = models.BooleanField('是否启用', default=True)
 
     class Meta:
         # 不同年级可能出现相同班级名，用 专业+年级+名称 联合唯一
@@ -95,6 +96,7 @@ class Course(models.Model):
     """课程：教务导入课程后，按 课程 -> 学院 -> 教学班 三层结构设置"""
     code = models.CharField('课程编号', max_length=20, unique=True)
     name = models.CharField('课程名称', max_length=50)
+    is_active = models.BooleanField('是否启用', default=True)
     # 课程开设的学院（与 CourseCollege 关联表配套使用）
     departments = models.ManyToManyField(
         Department, through='CourseCollege', related_name='courses',
@@ -193,12 +195,76 @@ class TeachingClass(models.Model):
     def save(self, *args, **kwargs):
         from django.db import router, transaction
         from .services import lockTeachingCourse, validateTeachingClasses
+        from .term_service import requireTermWrite
 
         using = kwargs.get('using') or router.db_for_write(type(self), instance=self)
         with transaction.atomic(using=using):
+            previous = type(self).objects.using(using).filter(pk=self.pk).values_list('term', flat=True).first()
+            for code in sorted({code for code in (previous, self.term) if code}):
+                requireTermWrite(code, using=using)
             lockTeachingCourse(self.course_college, using)
             if self.pk:
                 validateTeachingClasses(
                     self.course_college, self.term, self.admin_classes.all(),
                     excludeId=self.pk, using=using)
             super().save(*args, **kwargs)
+
+
+class AcademicTerm(models.Model):
+    """学期登记；教学班继续使用 code 字符串以保持原接口兼容。"""
+    OPEN = 'open'
+    CLOSED = 'closed'
+    ARCHIVED = 'archived'
+    code = models.CharField('学期编码', max_length=20, unique=True)
+    name = models.CharField('学期名称', max_length=50)
+    start_date = models.DateField('开始日期', null=True, blank=True)
+    end_date = models.DateField('结束日期', null=True, blank=True)
+    status = models.CharField('状态', max_length=12, default=OPEN, choices=[
+        (OPEN, '开放'), (CLOSED, '已关闭'), (ARCHIVED, '已归档')])
+    is_current = models.BooleanField('当前学期', default=False)
+    closed_at = models.DateTimeField('关闭时间', null=True, blank=True)
+    archived_at = models.DateTimeField('归档时间', null=True, blank=True)
+
+    class Meta:
+        ordering = ['-code']
+        constraints = [
+            models.UniqueConstraint(fields=['is_current'], condition=models.Q(is_current=True),
+                                    name='unique_current_academic_term'),
+            models.CheckConstraint(condition=(models.Q(start_date__isnull=True,
+                                                       end_date__isnull=True)
+                | models.Q(start_date__isnull=False, end_date__isnull=False,
+                           end_date__gte=models.F('start_date'))),
+                                   name='academic_term_dates_ordered'),
+            models.CheckConstraint(condition=models.Q(is_current=False) | models.Q(status='open'),
+                                   name='current_academic_term_open'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class TeachingClassRecord(models.Model):
+    """关闭时冻结名单，归档时冻结逐作业成绩；保留原始提交供追溯。"""
+    teaching_class = models.OneToOneField(
+        TeachingClass, on_delete=models.PROTECT, related_name='term_record')
+    roster = models.JSONField(default=list)
+    gradebooks = models.JSONField(default=dict)
+    closed_at = models.DateTimeField()
+    archived_at = models.DateTimeField(null=True, blank=True)
+
+
+class AuditEvent(models.Model):
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+                              null=True, related_name='audit_events')
+    actor_username = models.CharField(max_length=150)
+    action = models.CharField(max_length=100)
+    object_type = models.CharField(max_length=100)
+    object_id = models.CharField(max_length=64)
+    before = models.JSONField(default=dict)
+    after = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        indexes = [models.Index(fields=['action', 'created_at'], name='audit_action_time_idx'),
+                   models.Index(fields=['object_type', 'object_id'], name='audit_object_idx')]

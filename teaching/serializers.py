@@ -2,7 +2,7 @@
 from django.utils import timezone
 from rest_framework import serializers
 
-from academics.models import ClassMembership, TeachingClass
+from academics.models import TeachingClass
 from academics.serializers import (CourseBriefSerializer,
                                    DepartmentBriefSerializer)
 
@@ -26,9 +26,8 @@ class TeacherTeachingClassSerializer(serializers.ModelSerializer):
     def get_studentCount(self, obj):
         """当前在班成员数 = 组成行政班的成员关系聚合（多班合班自动去重场景下
         按成员关系计数，一人一班约束保证不重复）"""
-        return ClassMembership.objects.filter(
-            admin_class__teaching_classes=obj,
-            left_at__isnull=True).count()
+        from .teacher_service import classRoster
+        return len(classRoster(obj))
 
 
 class SubmissionListSerializer(serializers.Serializer):

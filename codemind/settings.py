@@ -52,6 +52,8 @@ INSTALLED_APPS = [
     'axes',
     # 教务业务：课程、班级、导入
     'academics',
+    # 课程组知识库、章节与课程共享资料
+    'course_team',
     # 教师工作台：班级通知、学情分析、班级资料、作业、批改、个人题库
     'teaching',
     # 异步任务统一记录（AsyncTask 表，见 docs/异步任务设计.md）

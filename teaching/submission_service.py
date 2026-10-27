@@ -23,8 +23,9 @@ from django_q.tasks import async_task
 from rest_framework.exceptions import NotFound, Throttled, ValidationError
 
 from teaching.helpers import getStudentTeachingClass
+from academics.term_service import requireTeachingWrite
 from teaching.homework_service import lockHomework
-from teaching.models import (HomeworkProblem, JudgeTask, Problem,
+from teaching.models import (Homework, HomeworkProblem, JudgeTask, Problem,
                              Submission)
 
 logger = logging.getLogger('codemind.submission')
@@ -102,8 +103,13 @@ def submitSolution(requestUser, payload):
     homeworkId = parseObjectId(homeworkId, 'homeworkId')
     validateCode(code)
 
-    # 固定顺序先锁用户、再锁作业：限流、题目归属、快照与建表使用同一事务。
+    accessible = Homework.objects.select_related('teaching_class').filter(pk=homeworkId).first()
+    if accessible is None:
+        raise NotFound('作业不存在')
+    getStudentTeachingClass(requestUser, accessible.teaching_class_id)
+    # 固定顺序先锁学期、再锁用户与作业，关闭学期后不再受理新提交。
     with transaction.atomic():
+        requireTeachingWrite(accessible.teaching_class)
         get_user_model().objects.filter(pk=requestUser.pk).update(id=F('id'))
         homework, item = validateHomeworkSubmission(requestUser, homeworkId, problemId)
         problem = item.problem
@@ -157,6 +163,7 @@ def validateHomeworkSubmission(requestUser, homeworkId, problemId):
     homework = lockHomework(homeworkId)
     # 对象级校验：学生经「行政班 → 教学班」三跳推导，不在班 404
     getStudentTeachingClass(requestUser, homework.teaching_class_id)
+    requireTeachingWrite(homework.teaching_class)
     # 只在有权访问的作业中查题，存在但未布置的题与不存在的题响应一致。
     item = HomeworkProblem.objects.select_related('problem').filter(
         homework=homework, problem_id=problemId).first()

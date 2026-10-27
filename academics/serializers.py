@@ -77,9 +77,8 @@ class TeachingClassBriefSerializer(serializers.ModelSerializer):
 
     def get_studentCount(self, obj):
         """学生数 = 组成行政班的当前成员数之和（经成员关系推导）"""
-        return ClassMembership.objects.filter(
-            admin_class__teaching_classes=obj,
-            left_at__isnull=True).count()
+        from teaching.teacher_service import classRoster
+        return len(classRoster(obj))
 
 
 class TeachingClassSerializer(serializers.ModelSerializer):
@@ -101,24 +100,13 @@ class TeachingClassSerializer(serializers.ModelSerializer):
     def get_students(self, obj):
         """学生名单 = 组成行政班的当前成员聚合；一人一班约束下天然唯一，
         这里仍按用户 id 去重兜底（防御脏数据）"""
-        memberships = ClassMembership.objects.filter(
-            admin_class__teaching_classes=obj,
-            left_at__isnull=True).select_related(
-            'student_profile__identity__user')
-        seenIds = set()
-        users = []
-        for membership in memberships:
-            user = membership.student_profile.identity.user
-            if user.id not in seenIds:
-                seenIds.add(user.id)
-                users.append(user)
-        return UserBriefSerializer(users, many=True).data
+        from teaching.teacher_service import classRoster
+        return [{key: row[key] for key in ('id', 'username', 'name')} for row in classRoster(obj)]
 
     def get_studentCount(self, obj):
         """与简要序列化器同一套推导口径"""
-        return ClassMembership.objects.filter(
-            admin_class__teaching_classes=obj,
-            left_at__isnull=True).count()
+        from teaching.teacher_service import classRoster
+        return len(classRoster(obj))
 
 
 class CourseCollegeSerializer(serializers.ModelSerializer):

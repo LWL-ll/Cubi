@@ -7,8 +7,33 @@ from .api import (AdminClassDetailView, AdminClassListView,
                   CourseCollegeView, CourseDetailView, CourseListView,
                   DepartmentListView, ImportView, TeachingClassDetailView,
                   TeachingClassListView)
+from .base_api import (OfficeDepartmentListView, OfficeDepartmentDetailView,
+                       OfficeMajorListView, OfficeMajorDetailView,
+                       OfficeCourseListView, OfficeCourseDetailView,
+                       OfficeAdminClassListView, OfficeAdminClassDetailView)
+from .student_api import StudentAcademicView
+from .term_api import TermListView, TermDetailView, TermActionView, AuditListView
+from users.account_api import AccountListView, AccountDetailView, AccountPasswordResetView
 
 urlpatterns = [
+    path('office/departments/', OfficeDepartmentListView.as_view()),
+    path('office/departments/<int:objectId>/', OfficeDepartmentDetailView.as_view()),
+    path('office/majors/', OfficeMajorListView.as_view()),
+    path('office/majors/<int:objectId>/', OfficeMajorDetailView.as_view()),
+    path('office/courses/', OfficeCourseListView.as_view()),
+    path('office/courses/<int:objectId>/', OfficeCourseDetailView.as_view()),
+    path('office/admin-classes/', OfficeAdminClassListView.as_view()),
+    path('office/admin-classes/<int:objectId>/', OfficeAdminClassDetailView.as_view()),
+    path('office/accounts/', AccountListView.as_view()),
+    path('office/accounts/<int:accountId>/', AccountDetailView.as_view()),
+    path('office/accounts/<int:accountId>/reset-password/', AccountPasswordResetView.as_view()),
+    path('office/terms/', TermListView.as_view()),
+    path('office/terms/<int:termId>/', TermDetailView.as_view()),
+    path('office/terms/<int:termId>/current/', TermActionView.as_view(), {'action': 'current'}),
+    path('office/terms/<int:termId>/close/', TermActionView.as_view(), {'action': 'close'}),
+    path('office/terms/<int:termId>/archive/', TermActionView.as_view(), {'action': 'archive'}),
+    path('office/audit-events/', AuditListView.as_view()),
+    path('students/<int:studentId>/academic/', StudentAcademicView.as_view()),
     path('students/', StudentListView.as_view()),
     path('students/<int:studentId>/', StudentDetailView.as_view()),
     path('students/<int:studentId>/memberships/', StudentMembershipListView.as_view()),

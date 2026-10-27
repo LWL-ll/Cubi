@@ -5,6 +5,7 @@ from django.db import transaction
 from django.http import Http404
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
+from academics.term_service import requireTeachingWrite
 
 from .homework_service import (getManageableHomework, getStudentHomework,
                                lockHomework)
@@ -36,10 +37,12 @@ def _answerList(homework):
     }
 
 
-def _lockManageableHomework(user, homeworkId):
+def _lockManageableHomework(user, accessible):
     """与作业编辑、提交和删除共用写锁，并在锁内重查授权。"""
-    homework = lockHomework(homeworkId)
-    getManageableHomework(user, homework.pk)
+    requireTeachingWrite(accessible.teaching_class, allowClosed=True)
+    lockHomework(accessible.pk)
+    homework = getManageableHomework(user, accessible.pk)
+    requireTeachingWrite(homework.teaching_class, allowClosed=True)
     return homework
 
 
@@ -72,8 +75,9 @@ def listTeacherAnswers(user, homeworkId):
 
 def saveAnswer(user, homeworkId, problemId, payload):
     content = _validateContent(payload)
+    accessible = getManageableHomework(user, homeworkId)
     with transaction.atomic():
-        homework = _lockManageableHomework(user, homeworkId)
+        homework = _lockManageableHomework(user, accessible)
         item = _getHomeworkProblem(homework, problemId)
         answer, _ = HomeworkAnswer.objects.update_or_create(
             homework_problem=item,
@@ -82,8 +86,9 @@ def saveAnswer(user, homeworkId, problemId, payload):
 
 
 def deleteAnswer(user, homeworkId, problemId):
+    accessible = getManageableHomework(user, homeworkId)
     with transaction.atomic():
-        homework = _lockManageableHomework(user, homeworkId)
+        homework = _lockManageableHomework(user, accessible)
         item = _getHomeworkProblem(homework, problemId)
         if not HomeworkAnswer.objects.filter(homework_problem=item).delete()[0]:
             raise Http404('参考答案不存在')
@@ -92,8 +97,9 @@ def deleteAnswer(user, homeworkId, problemId):
 def publishAnswers(user, homeworkId, payload):
     if not isinstance(payload, Mapping) or payload:
         raise ValidationError('发布参考答案的请求体必须是空对象')
+    accessible = getManageableHomework(user, homeworkId)
     with transaction.atomic():
-        homework = _lockManageableHomework(user, homeworkId)
+        homework = _lockManageableHomework(user, accessible)
         if homework.answers_released_at is not None:
             return _answerList(homework)
         now = timezone.now()

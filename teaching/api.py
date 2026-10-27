@@ -21,11 +21,11 @@ from users.permissions import IsSuperUser, IsTeacherGroup, PermRequired
 from tasks.models import AsyncTask
 
 from .helpers import getStudentTeachingClass, getTeacherTeachingClass
-from .models import SubmissionReview
 from .problem_import import importProblemZip
 from .serializers import (SubmissionReviewSerializer, TeacherSubmissionDetailSerializer,
                           TeacherSubmissionSerializer, TeachingMaterialSerializer)
 from .teacher_service import (classDashboard, classRoster, exportGradebook, filterStudents,
+                              deleteReview,
                               getTeacherSubmission, gradeRows, homeworkGradebook,
                               saveReview, teacherSubmissions)
 from .material_service import (createMaterial, getMaterial, openMaterial, removeMaterial,
@@ -447,7 +447,7 @@ class TeacherSubmissionReviewView(APIView):
 
     def delete(self, request, submissionId):
         submission = getTeacherSubmission(request.user, submissionId)
-        SubmissionReview.objects.filter(submission=submission).delete()
+        deleteReview(submission)
         return Response(status=204)
 
 

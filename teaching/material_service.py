@@ -10,6 +10,7 @@ from django.db import transaction
 from django.db.models import F
 from django.http import Http404
 from rest_framework.exceptions import ValidationError
+from academics.term_service import requireTeachingWrite
 
 from teaching.helpers import getStudentTeachingClass, getTeacherTeachingClass
 from teaching.models import TeachingMaterial
@@ -80,15 +81,17 @@ def createMaterial(user, teachingClass, payload, uploaded):
     fields = validateMaterial(payload, uploaded, creating=True)
     name = storeUpload(uploaded, fields['original_name'])
     try:
-        return TeachingMaterial.objects.create(
-            teaching_class=teachingClass, uploaded_by=user, storage_name=name, **fields)
+        with transaction.atomic():
+            requireTeachingWrite(teachingClass)
+            return TeachingMaterial.objects.create(
+                teaching_class=teachingClass, uploaded_by=user, storage_name=name, **fields)
     except Exception:
         deleteStoredFile(name)
         raise
 
 
 def getMaterial(user, materialId, *, student=False):
-    material = TeachingMaterial.objects.select_related('uploaded_by').filter(pk=materialId).first()
+    material = TeachingMaterial.objects.select_related('uploaded_by', 'teaching_class').filter(pk=materialId).first()
     if material is None:
         raise Http404('资料不存在')
     check = getStudentTeachingClass if student else getTeacherTeachingClass
@@ -101,6 +104,7 @@ def getMaterial(user, materialId, *, student=False):
 
 def updateMaterial(user, material, payload, uploaded):
     fields = validateMaterial(payload, uploaded, creating=False)
+    teachingClass = material.teaching_class
     newName = None
     if uploaded is not None:
         newName = storeUpload(uploaded, fields['original_name'])
@@ -108,6 +112,7 @@ def updateMaterial(user, material, payload, uploaded):
         fields['uploaded_by'] = user
     try:
         with transaction.atomic():
+            requireTeachingWrite(teachingClass)
             if not TeachingMaterial.objects.filter(pk=material.pk).update(id=F('id')):
                 raise Http404('资料不存在')
             material.refresh_from_db()
@@ -125,7 +130,9 @@ def updateMaterial(user, material, payload, uploaded):
 
 
 def removeMaterial(material):
+    teachingClass = material.teaching_class
     with transaction.atomic():
+        requireTeachingWrite(teachingClass)
         if not TeachingMaterial.objects.filter(pk=material.pk).update(id=F('id')):
             raise Http404('资料不存在')
         material.refresh_from_db()

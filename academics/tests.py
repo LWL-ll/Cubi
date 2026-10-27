@@ -363,6 +363,8 @@ class TeachingClassApiTests(OfficeApiTestBase):
         self.assertEqual(resp.status_code, 403)
 
     def test_create_success_inherits_teacher_pool(self):
+        from .models import AcademicTerm
+        AcademicTerm.objects.create(code='2027-2028-1', name='下一学期')
         resp = self._call(
             TeachingClassListView, self.adminUser, method='post',
             data={'name': '矩阵二班', 'courseCollegeId': self.cc.id,
