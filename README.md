@@ -68,4 +68,4 @@ python manage.py makemigrations --dry-run --check
 
 测试使用测试库。本轮新增迁移为 `academics 0011/0012`、`tasks 0004/0005`、`course_team 0001`；历史学期迁移保留原编码，不推断学校日期。完成部署后应配置正式学期日期并核对当前学期。
 
-从 `liuwenli` 新建无 `codex/` 前缀的任务分支，中文本地提交，由用户推送 GitHub 后交团队审查合并。具体操作授权规则见 [AGENTS.md](AGENTS.md)。
+Git 协作流程、分支命名、提交与推送规则统一见 [AGENTS.md 的版本管理约定](AGENTS.md#版本管理)。
